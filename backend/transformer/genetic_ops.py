@@ -4,22 +4,14 @@ import random
 from dataclasses import dataclass
 from typing import List
 
-try:
+from _import_bootstrap import NUMPY_AVAILABLE, TORCH_AVAILABLE
+from population import Individual
+
+if NUMPY_AVAILABLE:
     import numpy as np
-    NUMPY_AVAILABLE = True
-except ImportError:
-    NUMPY_AVAILABLE = False
 
-try:
+if TORCH_AVAILABLE:
     import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-
-try:
-    from backend.Transformer.population import Individual
-except ImportError:
-    from population import Individual
 
 
 @dataclass

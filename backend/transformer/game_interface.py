@@ -10,12 +10,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
+from _import_bootstrap import TORCH_AVAILABLE
+
+if TORCH_AVAILABLE:
     import torch
     import torch.nn.functional as F
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
 
 
 # ============ 数据类定义 ============
@@ -147,10 +146,7 @@ def status_to_game_state_snapshot(
     Returns:
         GameStateSnapshot对象
     """
-    try:
-        from reward_system import GameStateSnapshot
-    except ImportError:
-        from backend.Transformer.reward_system import GameStateSnapshot
+    from reward_system import GameStateSnapshot
 
     return GameStateSnapshot(
         timestamp=status_dict.get("time", 0.0),
@@ -512,12 +508,10 @@ def test_game_interface():
 
     try:
         # 1. 导入依赖
-        try:
-            from sim_env import CTFSim
-            from lib.tree_features import Geometry
-        except ImportError:
-            from backend.transformer.sim_env import CTFSim
-            from backend.lib.tree_features import Geometry
+        from _import_bootstrap import get_geometry
+        from sim_env import CTFSim
+
+        Geometry = get_geometry()
 
         from reward_system import AdaptiveRewardSystem
 
@@ -581,12 +575,10 @@ def test_transformer_agent():
 
     try:
         # 1. 导入依赖
-        try:
-            from sim_env import CTFSim
-            from lib.tree_features import Geometry
-        except ImportError:
-            from backend.transformer.sim_env import CTFSim
-            from backend.lib.tree_features import Geometry
+        from _import_bootstrap import get_geometry
+        from sim_env import CTFSim
+
+        Geometry = get_geometry()
 
         from reward_system import AdaptiveRewardSystem
         from transformer_model import CTFTransformerConfig, build_ctf_transformer

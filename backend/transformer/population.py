@@ -6,16 +6,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-try:
-    import numpy as np
-    NUMPY_AVAILABLE = True
-except ImportError:
-    NUMPY_AVAILABLE = False
+from _import_bootstrap import NUMPY_AVAILABLE
 
-try:
-    from backend.Transformer.transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
-except ImportError:
-    from transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
+if NUMPY_AVAILABLE:
+    import numpy as np
+
+from transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
 
 
 @dataclass

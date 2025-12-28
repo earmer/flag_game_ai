@@ -8,8 +8,14 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any
 import json
 import os
-import torch
 from pathlib import Path
+
+from _import_bootstrap import TORCH_AVAILABLE, NUMPY_AVAILABLE
+
+if not TORCH_AVAILABLE:
+    raise RuntimeError("PyTorch is required for training. Install with: pip install torch")
+
+import torch
 
 
 # ============================================================

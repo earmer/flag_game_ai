@@ -202,9 +202,11 @@ def run_single_game(
         GameResult对象
     """
     # 导入依赖模块
+    from _import_bootstrap import get_geometry
     from sim_env import CTFSim
-    from lib.tree_features import Geometry
     from game_interface import GameInterface, TransformerAgent
+
+    Geometry = get_geometry()
 
     # 1. 创建游戏环境
     if seed is None:

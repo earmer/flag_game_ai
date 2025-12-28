@@ -4,12 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from collections import deque
 
-try:
-    from backend.lib.tree_features import Geometry
-    from backend.transformer.encoding import encode_status_for_team, to_torch_batch, EncodedBatch
-except ImportError:
-    from lib.tree_features import Geometry
-    from encoding import encode_status_for_team, to_torch_batch, EncodedBatch
+from _import_bootstrap import get_geometry
+from encoding import encode_status_for_team, to_torch_batch, EncodedBatch
+
+Geometry = get_geometry()
 
 
 @dataclass

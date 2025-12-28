@@ -3,24 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import sys
-import os
+from _import_bootstrap import get_geometry
 
-# Add parent directory to path to find lib module
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_backend_dir = os.path.dirname(_current_dir)
-if _backend_dir not in sys.path:
-    sys.path.insert(0, _backend_dir)
-
-try:
-    from lib.tree_features import Geometry  # type: ignore
-except ImportError:
-    try:
-        from backend.lib.tree_features import Geometry  # type: ignore
-    except ImportError:
-        # Last resort: relative import from parent
-        sys.path.insert(0, os.path.dirname(_backend_dir))
-        from backend.lib.tree_features import Geometry  # type: ignore
+Geometry = get_geometry()
 
 
 Token = Tuple[int, List[float]]  # (type_id, features)
