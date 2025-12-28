@@ -13,9 +13,9 @@ except ImportError:
     NUMPY_AVAILABLE = False
 
 try:
-    from backend.Transformer.transformer_model import CTFTransformer, CTFTransformerConfig
+    from backend.Transformer.transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
 except ImportError:
-    from transformer_model import CTFTransformer, CTFTransformerConfig
+    from transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
 
 
 @dataclass
@@ -43,6 +43,13 @@ class Individual:
     enemies_tagged: int = 0              # 标记敌人总数
     times_tagged: int = 0                # 被标记次数
     teammates_freed: int = 0             # 救出队友次数
+
+    # 临时世代统计（每代重置）
+    epoch_wins: int = 0                  # 本代胜场数
+    epoch_losses: int = 0                # 本代负场数
+    epoch_draws: int = 0                 # 本代平局数
+    epoch_total_reward: float = 0.0      # 本代累计奖励
+    epoch_games_played: int = 0          # 本代对战场数
 
     # 世代信息
     age: int = 0                         # 存活世代数
@@ -93,7 +100,7 @@ class PopulationConfig:
 class Population:
     """种群管理器"""
 
-    def __init__(self, config: PopulationConfig):
+    def __init__(self, config: PopulationConfig, model_config: Optional[CTFTransformerConfig] = None):
         self.config = config
         self.individuals: List[Individual] = []
         self.current_generation: int = 0
@@ -101,10 +108,12 @@ class Population:
         self.best_individual: Optional[Individual] = None
         self.best_fitness: float = float('-inf')
 
+        # Auto-initialize if model_config provided
+        if model_config is not None:
+            self.initialize_random(model_config)
+
     def initialize_random(self, model_config: CTFTransformerConfig) -> None:
         """随机初始化种群"""
-        from transformer_model import build_ctf_transformer
-
         self.individuals = []
         for i in range(self.config.population_size):
             model = build_ctf_transformer(model_config)

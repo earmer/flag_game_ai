@@ -190,16 +190,22 @@ class DenseRewardCalculator:
         self,
         current_state: GameStateSnapshot,
         prev_state: GameStateSnapshot,
-        my_target_pos: Tuple[int, int]
-    ) -> Tuple[float, Dict[str, float]]:
-        """计算整个团队的密集奖励"""
+        my_target_pos: Tuple[int, int],
+        generation: int = 0
+    ) -> Tuple[float, Dict[str, float], List[Dict[str, float]]]:
+        """计算整个团队的密集奖励，包含每个玩家的分解（随训练衰减）"""
         total_reward = 0.0
         total_breakdown = {}
+        player_breakdowns = []
+
+        # Per-player detail decays: Gen 0=1.0, Gen 40+=0.0
+        detail_strength = max(0.0, 1.0 - generation / 40)
 
         # 计算每个玩家的奖励
         for player_id in range(len(current_state.my_players)):
             player = current_state.my_players[player_id]
             prev_player = prev_state.my_players[player_id]
+            player_breakdown = {}
 
             player_pos = self._get_player_pos(player)
             prev_pos = self._get_player_pos(prev_player)
@@ -208,6 +214,7 @@ class DenseRewardCalculator:
             if player_pos != prev_pos:
                 total_reward += self.move_reward
                 total_breakdown['move'] = total_breakdown.get('move', 0.0) + self.move_reward
+                player_breakdown['move'] = self.move_reward * detail_strength
 
             # 2. 接近目标奖励
             if player.get('hasFlag', False):
@@ -217,6 +224,7 @@ class DenseRewardCalculator:
                 if dist_to_target < prev_dist:
                     total_reward += self.approach_target_reward
                     total_breakdown['approach_target'] = total_breakdown.get('approach_target', 0.0) + self.approach_target_reward
+                    player_breakdown['approach_target'] = self.approach_target_reward * detail_strength
             else:
                 # 无旗时：接近敌方旗帜
                 nearest_flag = self._find_nearest_flag(player_pos, current_state.opp_flags)
@@ -228,30 +236,39 @@ class DenseRewardCalculator:
                         if dist < prev_dist:
                             total_reward += self.approach_flag_reward
                             total_breakdown['approach_flag'] = total_breakdown.get('approach_flag', 0.0) + self.approach_flag_reward
+                            player_breakdown['approach_flag'] = self.approach_flag_reward * detail_strength
 
             # 3. 拾取旗帜奖励
             if player.get('hasFlag') and not prev_player.get('hasFlag'):
                 total_reward += self.pickup_flag_reward
                 total_breakdown['pickup_flag'] = total_breakdown.get('pickup_flag', 0.0) + self.pickup_flag_reward
+                player_breakdown['pickup_flag'] = self.pickup_flag_reward * detail_strength
 
             # 4. 被标记惩罚
             if player.get('inPrison') and not prev_player.get('inPrison'):
                 total_reward += self.tagged_penalty
                 total_breakdown['tagged'] = total_breakdown.get('tagged', 0.0) + self.tagged_penalty
+                player_breakdown['tagged'] = self.tagged_penalty * detail_strength
 
             # 5. 安全区域奖励
             if player.get('hasFlag') and player.get('isSafe', False):
                 total_reward += self.safe_with_flag_reward
                 total_breakdown['safe_with_flag'] = total_breakdown.get('safe_with_flag', 0.0) + self.safe_with_flag_reward
+                player_breakdown['safe_with_flag'] = self.safe_with_flag_reward * detail_strength
 
             # 6. 团队协作奖励
             teammate_dist = self._get_nearest_teammate_distance(player_id, current_state.my_players)
             if self.optimal_distance_min <= teammate_dist <= self.optimal_distance_max:
                 total_reward += self.teamwork_reward
                 total_breakdown['teamwork'] = total_breakdown.get('teamwork', 0.0) + self.teamwork_reward
+                player_breakdown['teamwork'] = self.teamwork_reward * detail_strength
             elif teammate_dist < 2:
                 total_reward += self.clustering_penalty
                 total_breakdown['clustering'] = total_breakdown.get('clustering', 0.0) + self.clustering_penalty
+                player_breakdown['clustering'] = self.clustering_penalty * detail_strength
+
+            # Append player breakdown
+            player_breakdowns.append(player_breakdown)
 
         # 标记敌人奖励（团队级别）
         enemies_tagged = self._count_enemies_tagged(current_state, prev_state)
@@ -260,7 +277,7 @@ class DenseRewardCalculator:
             total_reward += tag_reward
             total_breakdown['enemies_tagged'] = tag_reward
 
-        return total_reward, total_breakdown
+        return total_reward, total_breakdown, player_breakdowns
 
 
 # ============ 课程学习调度器 ============
@@ -301,6 +318,124 @@ class CurriculumScheduler:
             return 4
 
 
+# ============ 奖励塑形 ============
+
+class RewardShaping:
+    """奖励塑形 - 通过领域知识引导早期学习，随训练衰减"""
+
+    def __init__(self, generation: int):
+        # 塑形强度: Gen 0=0.3, Gen 30+=0.0
+        self.shaping_strength = max(0.0, 0.3 - generation / 100)
+
+    def _manhattan_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def _get_player_pos(self, player: Dict[str, Any]) -> Tuple[int, int]:
+        return (player['posX'], player['posY'])
+
+    def calculate_shaping_reward(
+        self,
+        current_state: GameStateSnapshot,
+        prev_state: GameStateSnapshot,
+        my_target_pos: Tuple[int, int],
+        my_prison_pos: Tuple[int, int]
+    ) -> Tuple[float, Dict[str, float]]:
+        """计算团队塑形奖励 (A+B+D options)"""
+        if self.shaping_strength < 0.01:
+            return 0.0, {}
+
+        reward = 0.0
+        breakdown = {}
+
+        for player_id, player in enumerate(current_state.my_players):
+            if player.get('inPrison', False):
+                continue
+
+            player_pos = self._get_player_pos(player)
+            prev_player = prev_state.my_players[player_id]
+            prev_pos = self._get_player_pos(prev_player)
+
+            # === Option A: Distance-Based ===
+            # A1: Approach enemy flag when not carrying
+            if not player.get('hasFlag', False):
+                pickable_flags = [f for f in current_state.opp_flags if f.get('canPickup', False)]
+                if pickable_flags:
+                    flag_positions = [(f['posX'], f['posY']) for f in pickable_flags]
+                    curr_dist = min(self._manhattan_distance(player_pos, fp) for fp in flag_positions)
+                    prev_dist = min(self._manhattan_distance(prev_pos, fp) for fp in flag_positions)
+                    if curr_dist < prev_dist:
+                        reward += 0.5
+                        breakdown['approach_flag'] = breakdown.get('approach_flag', 0) + 0.5
+
+            # A2: Approach target when carrying flag
+            if player.get('hasFlag', False):
+                curr_dist = self._manhattan_distance(player_pos, my_target_pos)
+                prev_dist = self._manhattan_distance(prev_pos, my_target_pos)
+                if curr_dist < prev_dist:
+                    reward += 1.0
+                    breakdown['approach_target'] = breakdown.get('approach_target', 0) + 1.0
+
+            # === Option B: Exploration-Based ===
+            # B1: Movement reward (penalize staying still)
+            if player_pos != prev_pos:
+                reward += 0.2
+                breakdown['movement'] = breakdown.get('movement', 0) + 0.2
+
+        # B2: Team spread bonus (avoid clustering)
+        active_players = [p for p in current_state.my_players if not p.get('inPrison', False)]
+        if len(active_players) >= 2:
+            positions = [self._get_player_pos(p) for p in active_players]
+            min_dist = float('inf')
+            for i in range(len(positions)):
+                for j in range(i + 1, len(positions)):
+                    d = self._manhattan_distance(positions[i], positions[j])
+                    min_dist = min(min_dist, d)
+            if min_dist >= 4:  # Good spread
+                reward += 0.3
+                breakdown['team_spread'] = 0.3
+            elif min_dist <= 1:  # Too clustered
+                reward -= 0.2
+                breakdown['clustering_penalty'] = -0.2
+
+        # === Option D: Event-Anticipation ===
+        for player_id, player in enumerate(current_state.my_players):
+            if player.get('inPrison', False):
+                continue
+            player_pos = self._get_player_pos(player)
+
+            # D1: Flag pickup potential (1-3 steps from flag)
+            if not player.get('hasFlag', False):
+                pickable = [f for f in current_state.opp_flags if f.get('canPickup', False)]
+                if pickable:
+                    flag_pos = [(f['posX'], f['posY']) for f in pickable]
+                    nearest = min(self._manhattan_distance(player_pos, fp) for fp in flag_pos)
+                    if 1 <= nearest <= 3:
+                        reward += 0.4
+                        breakdown['flag_potential'] = breakdown.get('flag_potential', 0) + 0.4
+
+            # D2: Tag potential (near vulnerable enemies)
+            vulnerable = [p for p in current_state.opp_players
+                         if not p.get('inPrison', False) and not p.get('isSafe', True)]
+            if vulnerable:
+                enemy_pos = [self._get_player_pos(p) for p in vulnerable]
+                nearest = min(self._manhattan_distance(player_pos, ep) for ep in enemy_pos)
+                if 1 <= nearest <= 2:
+                    reward += 0.3
+                    breakdown['tag_potential'] = breakdown.get('tag_potential', 0) + 0.3
+
+            # D3: Rescue potential (within 2 cells of prison when allies captured)
+            if current_state.get_my_prisoners_count() > 0:
+                dist_to_prison = self._manhattan_distance(player_pos, my_prison_pos)
+                if dist_to_prison <= 2:
+                    reward += 0.8
+                    breakdown['rescue_potential'] = breakdown.get('rescue_potential', 0) + 0.8
+
+        # Apply decay
+        scaled_reward = reward * self.shaping_strength
+        scaled_breakdown = {k: v * self.shaping_strength for k, v in breakdown.items()}
+        return scaled_reward, scaled_breakdown
+
+
 # ============ 自适应奖励系统 ============
 
 class AdaptiveRewardSystem:
@@ -310,6 +445,7 @@ class AdaptiveRewardSystem:
         self.sparse_calculator = SparseRewardCalculator()
         self.dense_calculator = DenseRewardCalculator()
         self.curriculum = CurriculumScheduler()
+        self.shaping: Optional[RewardShaping] = None
 
         self.current_generation = 0
         self.dense_weight = 0.8
@@ -319,16 +455,19 @@ class AdaptiveRewardSystem:
         """为新世代重置奖励系统"""
         self.current_generation = generation
         self.dense_weight, self.sparse_weight = self.curriculum.get_weights(generation)
+        self.shaping = RewardShaping(generation)
 
         stage = self.curriculum.get_stage(generation)
         print(f"Generation {generation} - Stage {stage}: "
-              f"Dense={self.dense_weight:.1%}, Sparse={self.sparse_weight:.1%}")
+              f"Dense={self.dense_weight:.1%}, Sparse={self.sparse_weight:.1%}, "
+              f"Shaping={self.shaping.shaping_strength:.2f}")
 
     def calculate_reward(
         self,
         current_state: GameStateSnapshot,
         prev_state: GameStateSnapshot,
-        my_target_pos: Tuple[int, int]
+        my_target_pos: Tuple[int, int],
+        my_prison_pos: Tuple[int, int] = (0, 0)
     ) -> RewardInfo:
         """计算混合奖励"""
         # 1. 计算稀疏奖励
@@ -337,20 +476,31 @@ class AdaptiveRewardSystem:
         )
 
         # 2. 计算密集奖励
-        dense_reward, dense_breakdown = self.dense_calculator.calculate(
-            current_state, prev_state, my_target_pos
+        dense_reward, dense_breakdown, player_breakdowns = self.dense_calculator.calculate(
+            current_state, prev_state, my_target_pos, self.current_generation
         )
 
-        # 3. 混合奖励
+        # 3. 计算塑形奖励
+        shaping_reward = 0.0
+        shaping_breakdown = {}
+        if self.shaping is not None:
+            shaping_reward, shaping_breakdown = self.shaping.calculate_shaping_reward(
+                current_state, prev_state, my_target_pos, my_prison_pos
+            )
+
+        # 4. 混合奖励
         total_reward = (
             self.dense_weight * dense_reward +
-            self.sparse_weight * sparse_reward
+            self.sparse_weight * sparse_reward +
+            shaping_reward
         )
 
-        # 4. 构建详细信息
+        # 5. 构建详细信息
         breakdown = {
             'sparse': sparse_breakdown,
             'dense': dense_breakdown,
+            'shaping': shaping_breakdown,
+            'player_breakdowns': player_breakdowns,
             'weights': {
                 'dense_weight': self.dense_weight,
                 'sparse_weight': self.sparse_weight
@@ -361,6 +511,6 @@ class AdaptiveRewardSystem:
             total=total_reward,
             sparse=sparse_reward,
             dense=dense_reward,
-            shaping=0.0,
+            shaping=shaping_reward,
             breakdown=breakdown
         )

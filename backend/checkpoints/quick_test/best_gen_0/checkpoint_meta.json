@@ -1,0 +1,16 @@
+{
+  "generation": 0,
+  "temperature": 1.0,
+  "stats": {
+    "num_games": 0,
+    "avg_steps": 0,
+    "avg_duration_ms": 0,
+    "l_wins": 0,
+    "r_wins": 0,
+    "draws": 0,
+    "best_fitness": 0,
+    "avg_fitness": 0,
+    "worst_fitness": 0
+  },
+  "best_fitness": 0
+}

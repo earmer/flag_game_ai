@@ -104,6 +104,13 @@ class CTFTransformer(nn.Module):
         Returns:
             action_logits: (B, num_players, num_actions) - 动作logits
         """
+        # 0. 验证特征维度
+        if features.size(-1) != self.config.feature_dim:
+            raise ValueError(
+                f"Feature dim mismatch: expected {self.config.feature_dim}, "
+                f"got {features.size(-1)}. Check encoding.py compatibility."
+            )
+
         # 1. 输入嵌入
         type_emb = self.type_embedding(type_ids)  # (B, T, D)
         feat_proj = self.feature_projection(features)  # (B, T, D)

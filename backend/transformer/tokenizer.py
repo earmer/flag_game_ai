@@ -6,10 +6,10 @@ from collections import deque
 
 try:
     from backend.lib.tree_features import Geometry
-    from backend.ctf_ai.encoding import encode_status_for_team, to_torch_batch, EncodedBatch
+    from backend.transformer.encoding import encode_status_for_team, to_torch_batch, EncodedBatch
 except ImportError:
     from lib.tree_features import Geometry
-    from ctf_ai.encoding import encode_status_for_team, to_torch_batch, EncodedBatch
+    from encoding import encode_status_for_team, to_torch_batch, EncodedBatch
 
 
 @dataclass
