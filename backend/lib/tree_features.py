@@ -16,6 +16,8 @@ class Geometry:
     blocked: frozenset[Tuple[int, int]]
     my_targets: Tuple[Tuple[int, int], ...]
     my_prisons: Tuple[Tuple[int, int], ...]
+    opp_targets: Tuple[Tuple[int, int], ...]
+    opp_prisons: Tuple[Tuple[int, int], ...]
 
     @staticmethod
     def from_init(req: Mapping[str, Any]) -> "Geometry":
@@ -27,6 +29,9 @@ class Geometry:
 
         my_targets = tuple((int(t["x"]), int(t["y"])) for t in (req.get("myteamTarget") or []))
         my_prisons = tuple((int(p["x"]), int(p["y"])) for p in (req.get("myteamPrison") or []))
+        opp_targets = tuple((int(t["x"]), int(t["y"])) for t in (req.get("opponentTarget") or []))
+        opp_prisons = tuple((int(p["x"]), int(p["y"])) for p in (req.get("opponentPrison") or []))
+
         if not my_targets:
             raise ValueError("Missing myteamTarget in init payload")
 
@@ -46,6 +51,8 @@ class Geometry:
             blocked=frozenset(blocked_list),
             my_targets=my_targets,
             my_prisons=my_prisons,
+            opp_targets=opp_targets,
+            opp_prisons=opp_prisons,
         )
 
     def normalize_pos(self, pos: Tuple[int, int]) -> Tuple[int, int]:

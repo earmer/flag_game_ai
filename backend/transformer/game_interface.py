@@ -525,11 +525,12 @@ def test_game_interface():
             width=init_payload["map"]["width"],
             height=init_payload["map"]["height"],
             my_side_is_left=True,
-            my_targets=[(t["x"], t["y"]) for t in init_payload["myteamTarget"]],
-            my_prisons=[(p["x"], p["y"]) for p in init_payload["myteamPrison"]],
-            opp_targets=[(t["x"], t["y"]) for t in init_payload["opponentTarget"]],
-            opp_prisons=[(p["x"], p["y"]) for p in init_payload["opponentPrison"]],
-            blocked=set((w["x"], w["y"]) for w in init_payload["map"]["walls"])
+            left_max_x=(init_payload["map"]["width"] - 1) // 2,
+            my_targets=tuple((t["x"], t["y"]) for t in init_payload["myteamTarget"]),
+            my_prisons=tuple((p["x"], p["y"]) for p in init_payload["myteamPrison"]),
+            opp_targets=tuple((t["x"], t["y"]) for t in init_payload["opponentTarget"]),
+            opp_prisons=tuple((p["x"], p["y"]) for p in init_payload["opponentPrison"]),
+            blocked=frozenset((w["x"], w["y"]) for w in init_payload["map"]["walls"])
         )
 
         # 4. 创建奖励系统
@@ -601,11 +602,12 @@ def test_transformer_agent():
             width=init_payload["map"]["width"],
             height=init_payload["map"]["height"],
             my_side_is_left=True,
-            my_targets=[(t["x"], t["y"]) for t in init_payload["myteamTarget"]],
-            my_prisons=[(p["x"], p["y"]) for p in init_payload["myteamPrison"]],
-            opp_targets=[(t["x"], t["y"]) for t in init_payload["opponentTarget"]],
-            opp_prisons=[(p["x"], p["y"]) for p in init_payload["opponentPrison"]],
-            blocked=set((w["x"], w["y"]) for w in init_payload["map"]["walls"])
+            left_max_x=(init_payload["map"]["width"] - 1) // 2,
+            my_targets=tuple((t["x"], t["y"]) for t in init_payload["myteamTarget"]),
+            my_prisons=tuple((p["x"], p["y"]) for p in init_payload["myteamPrison"]),
+            opp_targets=tuple((t["x"], t["y"]) for t in init_payload["opponentTarget"]),
+            opp_prisons=tuple((p["x"], p["y"]) for p in init_payload["opponentPrison"]),
+            blocked=frozenset((w["x"], w["y"]) for w in init_payload["map"]["walls"])
         )
 
         # 4. 创建奖励系统
