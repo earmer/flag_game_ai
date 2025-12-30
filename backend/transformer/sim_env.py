@@ -103,22 +103,27 @@ class PlayerState:
     name: str
     team: str  # "L" or "R"
     pos: Pos
+    target_pos: Pos
     has_flag: bool = False
     in_prison: bool = False
     in_prison_time_left_ms: int = 0
     in_prison_duration_ms: int = 20_000
 
     def status(self) -> Dict[str, object]:
-        x, y = self.pos
+        # posX/posY 对齐前端语义：返回“目标格”（玩家正朝向的格子）
+        tx, ty = self.target_pos
+        cx, cy = self.pos
         return {
             "name": self.name,
             "team": self.team,
             "hasFlag": bool(self.has_flag),
-            "posX": int(x),
-            "posY": int(y),
+            "posX": int(tx),
+            "posY": int(ty),
             "inPrison": bool(self.in_prison),
             "inPrisonTimeLeft": int(self.in_prison_time_left_ms),
             "inPrisonDuration": int(self.in_prison_duration_ms),
+            "_tileX": int(cx),
+            "_tileY": int(cy),
         }
 
 
@@ -172,6 +177,8 @@ class CTFSim:
         num_flags: int = 9,
         use_random_flags: bool = True,
         dt_ms: int = 600,
+        move_duration_ms: int = 300,
+        substep_ms: int = 25,
         seed: Optional[int] = None,
     ) -> None:
         self.width = int(width)
@@ -179,7 +186,10 @@ class CTFSim:
         self.num_players = int(num_players)
         self.num_flags = int(num_flags)
         self.use_random_flags = bool(use_random_flags)
+        # dt_ms 保留兼容；内部时间以 move/substep 推进，status.time 使用 sim_time_ms
         self.dt_ms = int(dt_ms)
+        self.move_duration_ms = int(move_duration_ms)
+        self.substep_ms = int(substep_ms)
         self.rng = random.Random(seed)
 
         self.map: Optional[MapSpec] = None
@@ -190,10 +200,12 @@ class CTFSim:
         self.l_score: int = 0
         self.r_score: int = 0
         self.step_count: int = 0
+        self.sim_time_ms: float = 0.0
         self.done: bool = False
 
     def reset(self) -> None:
         self.step_count = 0
+        self.sim_time_ms = 0.0
         self.done = False
         self.l_score = 0
         self.r_score = 0
@@ -290,9 +302,11 @@ class CTFSim:
             r_px = self.width - 3
 
         for i in range(self.num_players):
-            self.players.append(PlayerState(name=f"L{i}", team="L", pos=(l_px, i + 1)))
+            pos = (l_px, i + 1)
+            self.players.append(PlayerState(name=f"L{i}", team="L", pos=pos, target_pos=pos))
         for i in range(self.num_players):
-            self.players.append(PlayerState(name=f"R{i}", team="R", pos=(r_px, i + 1)))
+            pos = (r_px, i + 1)
+            self.players.append(PlayerState(name=f"R{i}", team="R", pos=pos, target_pos=pos))
 
     def _static(self, team: str) -> TeamStatic:
         if team == "L":
@@ -325,7 +339,7 @@ class CTFSim:
 
         return {
             "action": "status",
-            "time": float(self.step_count * self.dt_ms),
+            "time": float(self.sim_time_ms),
             "myteamPlayer": my_players,
             "myteamFlag": my_flags,
             "myteamScore": int(self._score(my_team)),
@@ -364,42 +378,92 @@ class CTFSim:
         }
 
     def step(self, l_actions: Mapping[str, Action], r_actions: Mapping[str, Action]) -> None:
+        """一次决策（到格点事件）。内部使用子步长推进时间，并做连续碰撞近似。"""
         if self.done:
             return
         assert self.map is not None
 
-        # 1) Update prison timers and move players (one tile max)
         blocked = set(self.map.blocked)
         name_to_action: Dict[str, Action] = {}
         name_to_action.update(l_actions)
         name_to_action.update(r_actions)
 
+        # 记录起点，先决定本次移动的目标格（在格点事件上消费动作）
+        start_pos: Dict[str, Pos] = {p.name: p.pos for p in self.players}
         for p in self.players:
             if p.in_prison:
-                p.in_prison_time_left_ms -= self.dt_ms
-                if p.in_prison_time_left_ms <= 0:
-                    p.in_prison = False
-                    p.in_prison_time_left_ms = 0
+                # 囚犯停留原地
+                p.target_pos = p.pos
                 continue
             act = name_to_action.get(p.name, "")
             nxt = _move(p.pos, act)
-            if not _in_bounds(self.width, self.height, nxt):
-                continue
-            if nxt in blocked:
-                continue
-            p.pos = nxt
+            if (not _in_bounds(self.width, self.height, nxt)) or (nxt in blocked):
+                nxt = p.pos
+            p.target_pos = nxt
 
-        # 2) Prison rescue (any free teammate steps onto own prison zone)
-        for team in ("L", "R"):
-            prison = set(self._static(team).prison_tiles)
-            rescuer_present = any((p.team == team and (not p.in_prison) and p.pos in prison) for p in self.players)
-            if rescuer_present:
-                for p in self.players:
-                    if p.team == team and p.in_prison:
+        # 推进时间 & 囚禁计时（用更细 substep 逼近前端的帧循环）
+        remaining = self.move_duration_ms
+        while remaining > 0:
+            dt = min(self.substep_ms, remaining)
+            for p in self.players:
+                if p.in_prison:
+                    p.in_prison_time_left_ms = max(0, p.in_prison_time_left_ms - dt)
+                    if p.in_prison_time_left_ms <= 0:
                         p.in_prison = False
-                        p.in_prison_time_left_ms = 0
+            self.sim_time_ms += dt
+            remaining -= dt
 
-        # 3) Flag pickup
+        # 连续碰撞近似：同目标 / 对穿 / 撞静止者
+        middle_line = self._middle_line_x()
+        captured: Dict[str, Pos] = {}
+        active = [p for p in self.players if not p.in_prison]
+        for i in range(len(active)):
+            for j in range(i + 1, len(active)):
+                a, b = active[i], active[j]
+                if a.team == b.team:
+                    continue
+                a_start, a_end = start_pos[a.name], a.target_pos
+                b_start, b_end = start_pos[b.name], b.target_pos
+
+                collision_tile: Optional[Pos] = None
+                collision_mid_x: Optional[float] = None
+
+                if a_end == b_end:
+                    collision_tile = a_end
+                    collision_mid_x = float(collision_tile[0])
+                elif a_end == b_start and b_end == a_start:
+                    # 对穿，取中点用于左右判定，掉旗位置取中点四舍五入
+                    collision_mid_x = (a_start[0] + a_end[0]) / 2.0
+                    collision_tile = (int(round(collision_mid_x)), int(round((a_start[1] + a_end[1]) / 2.0)))
+                elif a_end == b_start and b_end == b_start:
+                    collision_tile = b_start
+                    collision_mid_x = float(collision_tile[0])
+                elif b_end == a_start and a_end == a_start:
+                    collision_tile = a_start
+                    collision_mid_x = float(collision_tile[0])
+
+                if collision_tile is None or collision_mid_x is None:
+                    continue
+
+                left_half = collision_mid_x < middle_line
+                caught = b if left_half else a
+                # 避免重复处理同一个玩家
+                if caught.name not in captured:
+                    captured[caught.name] = collision_tile
+
+        for p in self.players:
+            if p.name in captured:
+                self._send_to_prison(p, capture_pos=captured[p.name])
+
+        # 更新非被捕玩家的位置到目标格
+        for p in self.players:
+            if p.in_prison:
+                p.target_pos = p.pos  # 囚犯保持在原地
+                continue
+            if p.name not in captured:
+                p.pos = p.target_pos
+
+        # 旗帜拾取（在抓捕之后）
         for p in self.players:
             if p.in_prison or p.has_flag:
                 continue
@@ -413,47 +477,32 @@ class CTFSim:
                     self.flags.remove(f)
                     break
 
-        # 4) Capture (if opposing players overlap after movement)
-        # In the frontend, capture depends on which half the collision occurs in.
-        middle_line = self._middle_line_x()
-        l_free = [p for p in self.players if p.team == "L" and not p.in_prison]
-        r_free = [p for p in self.players if p.team == "R" and not p.in_prison]
-
-        overlapped: List[Tuple[PlayerState, PlayerState]] = []
-        r_by_pos: Dict[Pos, List[PlayerState]] = {}
-        for rp in r_free:
-            r_by_pos.setdefault(rp.pos, []).append(rp)
-        for lp in l_free:
-            for rp in r_by_pos.get(lp.pos, []):
-                overlapped.append((lp, rp))
-
-        for lp, rp in overlapped:
-            if lp.in_prison or rp.in_prison:
-                continue
-            x, _y = lp.pos
-            left_half = float(x) < middle_line
-            caught = rp if left_half else lp
-            self._send_to_prison(caught)
-
-        # 5) Score (deliver flag on target zone)
+        # 交旗得分
         for p in self.players:
             if p.in_prison or not p.has_flag:
                 continue
-            target = set(self._static(p.team).target_tiles)
-            if p.pos in target:
+            target_tiles = set(self._static(p.team).target_tiles)
+            if p.pos in target_tiles:
                 p.has_flag = False
                 self._set_score(p.team, self._score(p.team) + 1)
-                # Mimic frontend: spawn an un-pickable enemy flag in the scoring team's target area.
                 enemy_team = "R" if p.team == "L" else "L"
                 spawn = self._find_free_tile_for_flag(self._static(p.team).target_tiles, team=enemy_team, can_pickup=False)
                 if spawn is not None:
                     self.flags.append(FlagState(team=enemy_team, pos=spawn, can_pickup=False))
 
-        # 6) Check termination
+        # 救援（最后）：只改 in_prison，不重置剩余时间，保持前端语义
+        for team in ("L", "R"):
+            prison_tiles = set(self._static(team).prison_tiles)
+            rescuer_present = any((p.team == team and (not p.in_prison) and p.pos in prison_tiles) for p in self.players)
+            if rescuer_present:
+                for p in self.players:
+                    if p.team == team and p.in_prison:
+                        p.in_prison = False
+                        # 保留 in_prison_time_left_ms，以便观测字段与前端一致
+
+        # 终局检测
         self.step_count += 1
-        if self.l_score >= self.num_flags:
-            self.done = True
-        elif self.r_score >= self.num_flags:
+        if self.l_score >= self.num_flags or self.r_score >= self.num_flags:
             self.done = True
 
     def result(self) -> EpisodeResult:
@@ -500,12 +549,13 @@ class CTFSim:
             return None
         return carriers[0]
 
-    def _send_to_prison(self, player: PlayerState) -> None:
-        # Drop carried flag at capture tile (as pickup-able flag for the flag's owner)
+    def _send_to_prison(self, player: PlayerState, capture_pos: Optional[Pos] = None) -> None:
+        # Drop carried flag at捕获位置（近似前端 getTileAtWorldXY）
+        drop_tile = capture_pos if capture_pos is not None else player.pos
         if player.has_flag:
             drop_team = player.team  # player is carrying opponent flag
             flag_team = "R" if drop_team == "L" else "L"
-            self.flags.append(FlagState(team=flag_team, pos=player.pos, can_pickup=True))
+            self.flags.append(FlagState(team=flag_team, pos=drop_tile, can_pickup=True))
             player.has_flag = False
 
         prison_tiles = self._static(player.team).prison_tiles
@@ -513,6 +563,7 @@ class CTFSim:
         if spot is None:
             spot = prison_tiles[0]
         player.pos = spot
+        player.target_pos = spot
         player.in_prison = True
         player.in_prison_time_left_ms = player.in_prison_duration_ms
 
@@ -529,4 +580,3 @@ class CTFSim:
             if (team, t, can_pickup) not in occupied:
                 return t
         return None
-
