@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
+import warnings
 
 try:
     import torch
     import torch.nn as nn
     TORCH_AVAILABLE = True
+
+    # Suppress PyTorch nested tensor prototype warning
+    # This warning is informational - nested tensors are an internal optimization
+    # that PyTorch uses automatically for better performance with padding masks.
+    # The API is stable enough for our use case.
+    warnings.filterwarnings(
+        "ignore",
+        message=".*nested tensors.*",
+        category=UserWarning,
+        module="torch.nn.modules.transformer"
+    )
 except ImportError:
     TORCH_AVAILABLE = False
 
@@ -125,6 +137,9 @@ class CTFTransformer(nn.Module):
             x = self.input_norm(x)
 
         # 4. Transformer编码
+        # Note: We pass the boolean mask directly. The nested tensor warning is
+        # informational only - PyTorch uses nested tensors internally for optimization.
+        # This is safe and actually faster than alternatives.
         context = self.transformer_encoder(
             x,
             src_key_padding_mask=padding_mask

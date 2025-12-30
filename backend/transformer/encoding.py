@@ -8,6 +8,8 @@ from transformer_model import CTFTransformerConfig
 
 Geometry = get_geometry()
 
+# Create a default config instance to access default values
+_DEFAULT_CONFIG = CTFTransformerConfig()
 
 Token = Tuple[int, List[float]]  # (type_id, features)
 
@@ -173,7 +175,7 @@ def encode_status_for_team(
     padding_mask = [False for _ in tokens]
     while len(type_ids) < max_tokens:
         type_ids.append(0)
-        feats.append([-1.0] * CTFTransformerConfig.feature_dim)
+        feats.append([-1.0] * _DEFAULT_CONFIG.feature_dim)
         padding_mask.append(True)
 
     my_player_indices = tuple(i for i in my_idx if i < max_tokens)
