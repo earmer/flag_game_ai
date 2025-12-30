@@ -205,7 +205,7 @@ def test_reward_system():
 
         # 测试密集奖励
         dense_calc = DenseRewardCalculator()
-        dense_reward, dense_breakdown = dense_calc.calculate(
+        dense_reward, dense_breakdown, player_breakdowns = dense_calc.calculate(
             current_state, prev_state, my_target_pos=(2, 2)
         )
         print(f"✓ 密集奖励计算成功: {dense_reward:.2f}")

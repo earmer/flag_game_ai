@@ -336,15 +336,33 @@ class GameInterface:
         self.max_steps = max_steps
 
     def _get_target_pos(self, team: str) -> Tuple[int, int]:
-        """获取队伍的目标位置"""
+        """获取队伍的目标位置
+
+        注意: Geometry对象总是从L队的视角初始化(my_side_is_left=True)
+        - my_targets = L队的目标位置
+        - opp_targets = R队的目标位置
+        - my_prisons = L队的监狱位置
+        - opp_prisons = R队的监狱位置
+        """
         if team == "L":
-            # L队的目标是左侧目标区
+            # L队的目标是my_targets
             targets = self.geometry.my_targets if self.geometry.my_side_is_left else self.geometry.opp_targets
         else:
-            # R队的目标是右侧目标区
+            # R队的目标是opp_targets(从L的视角)
             targets = self.geometry.opp_targets if self.geometry.my_side_is_left else self.geometry.my_targets
 
         return targets[0] if targets else (0, 0)
+
+    def _get_prison_pos(self, team: str) -> Tuple[int, int]:
+        """获取队伍的监狱位置（用于奖励塑形中的救援潜力计算）"""
+        if team == "L":
+            # L队的监狱在左侧
+            prisons = self.geometry.my_prisons if self.geometry.my_side_is_left else self.geometry.opp_prisons
+        else:
+            # R队的监狱在右侧
+            prisons = self.geometry.opp_prisons if self.geometry.my_side_is_left else self.geometry.my_prisons
+
+        return prisons[0] if prisons else (0, 0)
 
     def _determine_winner(self) -> Optional[str]:
         """判断游戏胜者"""
@@ -389,9 +407,19 @@ class GameInterface:
         r_reward_breakdown = {}
         trajectory = [] if record_trajectory else None
 
+        # 2.1 初始化存活率和标记统计变量
+        l_survival_steps = 0
+        r_survival_steps = 0
+        l_enemies_tagged = 0
+        r_enemies_tagged = 0
+
         # 3. 获取目标位置
         l_target_pos = self._get_target_pos("L")
         r_target_pos = self._get_target_pos("R")
+
+        # 3.1 获取监狱位置（用于奖励塑形）
+        l_prison_pos = self._get_prison_pos("L")
+        r_prison_pos = self._get_prison_pos("R")
 
         # 4. 主循环
         for step in range(self.max_steps):
@@ -417,12 +445,40 @@ class GameInterface:
             l_state_after = status_to_game_state_snapshot(l_status_after, "L")
             r_state_after = status_to_game_state_snapshot(r_status_after, "R")
 
+            # 4.5.1 统计存活率（每步累计非囚禁玩家数）
+            l_alive = sum(1 for p in l_status_after.get("myteamPlayer", []) if not p.get("inPrison", False))
+            r_alive = sum(1 for p in r_status_after.get("myteamPlayer", []) if not p.get("inPrison", False))
+            l_survival_steps += l_alive
+            r_survival_steps += r_alive
+
+            # 4.5.2 统计敌人标记（检测对方玩家新入狱）
+            for r_player in r_status_after.get("myteamPlayer", []):
+                if r_player.get("inPrison", False):
+                    # 检查之前是否不在监狱
+                    r_id = r_player.get("id")
+                    was_free = not any(
+                        p.get("id") == r_id and p.get("inPrison", False)
+                        for p in r_status.get("myteamPlayer", [])
+                    )
+                    if was_free:
+                        l_enemies_tagged += 1
+
+            for l_player in l_status_after.get("myteamPlayer", []):
+                if l_player.get("inPrison", False):
+                    l_id = l_player.get("id")
+                    was_free = not any(
+                        p.get("id") == l_id and p.get("inPrison", False)
+                        for p in l_status.get("myteamPlayer", [])
+                    )
+                    if was_free:
+                        r_enemies_tagged += 1
+
             # 4.6 计算奖励
             l_reward_info = self.reward_system.calculate_reward(
-                l_state_after, l_state_before, l_target_pos
+                l_state_after, l_state_before, l_target_pos, l_prison_pos
             )
             r_reward_info = self.reward_system.calculate_reward(
-                r_state_after, r_state_before, r_target_pos
+                r_state_after, r_state_before, r_target_pos, r_prison_pos
             )
 
             l_total_reward += l_reward_info.total
@@ -460,18 +516,7 @@ class GameInterface:
         l_flags_captured = self.sim.l_score
         r_flags_captured = self.sim.r_score
 
-        # 计算平均存活率（未被囚禁的比例）
-        l_survival_steps = 0
-        r_survival_steps = 0
-        for i in range(final_step):
-            status = self.sim.status("L")
-            l_prisoners = sum(1 for p in status.get("myteamPlayer", []) if p.get("inPrison", False))
-            l_survival_steps += (len(status.get("myteamPlayer", [])) - l_prisoners)
-
-            status = self.sim.status("R")
-            r_prisoners = sum(1 for p in status.get("myteamPlayer", []) if p.get("inPrison", False))
-            r_survival_steps += (len(status.get("myteamPlayer", [])) - r_prisoners)
-
+        # 计算平均存活率（使用循环中累计的数据）
         l_avg_survival = l_survival_steps / max(1, final_step * 3)  # 3 players
         r_avg_survival = r_survival_steps / max(1, final_step * 3)
 
@@ -481,15 +526,15 @@ class GameInterface:
             l_score=self.sim.l_score,
             r_score=self.sim.r_score,
             steps=final_step,
-            duration_ms=float(final_step * self.sim.dt_ms),
+            duration_ms=float(getattr(self.sim, "sim_time_ms", final_step * self.sim.dt_ms)),
             l_total_reward=l_total_reward,
             r_total_reward=r_total_reward,
             l_reward_breakdown=l_reward_breakdown,
             r_reward_breakdown=r_reward_breakdown,
             l_flags_captured=l_flags_captured,
             r_flags_captured=r_flags_captured,
-            l_enemies_tagged=0,  # TODO: 从轨迹中统计
-            r_enemies_tagged=0,
+            l_enemies_tagged=l_enemies_tagged,
+            r_enemies_tagged=r_enemies_tagged,
             l_avg_survival_rate=l_avg_survival,
             r_avg_survival_rate=r_avg_survival,
             trajectory=trajectory

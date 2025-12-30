@@ -295,15 +295,20 @@ class CurriculumScheduler:
     def get_weights(self, generation: int) -> Tuple[float, float]:
         """获取当前世代的奖励权重 (dense_weight, sparse_weight)"""
         if generation <= self.stage1_end:
+            # Stage 1 (Gen 0-10): 密集奖励为主，快速学习
             return 0.8, 0.2
         elif generation <= self.stage2_end:
+            # Stage 2 (Gen 11-25): 线性过渡从(0.8, 0.2)到(0.1, 0.9)
+            # 在这个阶段，密集奖励逐渐减少，稀疏奖励逐渐增加
             progress = (generation - self.stage1_end) / (self.stage2_end - self.stage1_end)
-            dense_weight = 0.8 - 0.7 * progress
-            sparse_weight = 0.2 + 0.7 * progress
+            dense_weight = 0.8 - 0.7 * progress  # 0.8 → 0.1
+            sparse_weight = 0.2 + 0.7 * progress  # 0.2 → 0.9
             return dense_weight, sparse_weight
         elif generation <= self.stage3_end:
+            # Stage 3 (Gen 26-40): 稀疏奖励为主，优化目标
             return 0.1, 0.9
         else:
+            # Stage 4 (Gen 41+): 纯稀疏奖励，完全自主学习
             return 0.0, 1.0
 
     def get_stage(self, generation: int) -> int:
@@ -324,7 +329,10 @@ class RewardShaping:
     """奖励塑形 - 通过领域知识引导早期学习，随训练衰减"""
 
     def __init__(self, generation: int):
-        # 塑形强度: Gen 0=0.3, Gen 30+=0.0
+        # 塑形强度衰减: 从Gen 0的0.3线性衰减到Gen 30的0.0
+        # Gen 0: 0.3 (强引导)
+        # Gen 15: 0.15 (中等引导)
+        # Gen 30+: 0.0 (无引导，完全自主)
         self.shaping_strength = max(0.0, 0.3 - generation / 100)
 
     def _manhattan_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:

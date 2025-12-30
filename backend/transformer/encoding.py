@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from _import_bootstrap import get_geometry
+from transformer_model import CTFTransformerConfig
 
 Geometry = get_geometry()
 
@@ -76,6 +77,7 @@ def encode_status_for_team(
         float(len(opp_flags)),
         float(geometry.width),
         float(geometry.height),
+        -1.0,  # Padding: not applicable for global token
     ]
     tokens.append((ENTITY_TYPES["global"], g))
 
@@ -110,6 +112,10 @@ def encode_status_for_team(
             float(pos[1]) / max(1.0, float(geometry.height - 1)),
             1.0 if bool(p.get("hasFlag")) else 0.0,
             1.0 if bool(p.get("inPrison")) else 0.0,
+            -1.0,  # Padding: distance features not computed for opponents
+            -1.0,
+            -1.0,
+            -1.0,
         ]
         tokens.append((ENTITY_TYPES["opp_player"], feats))
 
@@ -119,6 +125,12 @@ def encode_status_for_team(
         feats = [
             float(pos[0]) / max(1.0, float(geometry.width - 1)),
             float(pos[1]) / max(1.0, float(geometry.height - 1)),
+            1.0,   # canPickup (always true for flags in this list)
+            -1.0,  # Padding: flags don't have other state
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
         ]
         tokens.append((ENTITY_TYPES["opp_flag"], feats))
 
@@ -129,6 +141,12 @@ def encode_status_for_team(
             [
                 float(my_target_center[0]) / max(1.0, float(geometry.width - 1)),
                 float(my_target_center[1]) / max(1.0, float(geometry.height - 1)),
+                1.0,   # is_target marker (distinguishes from prison)
+                -1.0,  # Padding: static locations don't have other state
+                -1.0,
+                -1.0,
+                -1.0,
+                -1.0,
             ],
         )
     )
@@ -138,6 +156,12 @@ def encode_status_for_team(
             [
                 float(my_prison_center[0]) / max(1.0, float(geometry.width - 1)),
                 float(my_prison_center[1]) / max(1.0, float(geometry.height - 1)),
+                0.0,   # is_target marker (0.0 = prison, not target)
+                float(num_my_prisoners),  # Number of teammates in prison
+                -1.0,  # Padding
+                -1.0,
+                -1.0,
+                -1.0,
             ],
         )
     )
@@ -149,7 +173,7 @@ def encode_status_for_team(
     padding_mask = [False for _ in tokens]
     while len(type_ids) < max_tokens:
         type_ids.append(0)
-        feats.append([0.0] * len(feats[0]))
+        feats.append([-1.0] * CTFTransformerConfig.feature_dim)
         padding_mask.append(True)
 
     my_player_indices = tuple(i for i in my_idx if i < max_tokens)
