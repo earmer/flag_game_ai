@@ -283,36 +283,62 @@ class DenseRewardCalculator:
 # ============ 课程学习调度器 ============
 
 class CurriculumScheduler:
-    """课程学习调度器 - 动态调整稀疏奖励和密集奖励的混合比例"""
+    """课程学习调度器 - 动态调整稀疏奖励和密集奖励的混合比例
+
+    新增：基于平局率的自适应切换，只有当平局率<90%时才开始增加稀疏奖励
+    """
 
     def __init__(self):
-        # 阶段划分
-        self.stage1_end = 10      # Gen 0-10: 密集为主
-        self.stage2_end = 25      # Gen 11-25: 线性过渡
-        self.stage3_end = 40      # Gen 26-40: 稀疏为主
-        # Gen 41+: 纯稀疏
+        # 阶段划分（基于世代）
+        self.stage1_end = 50      # Gen 0-50: 密集为主（延长探索期）
+        self.stage2_end = 100     # Gen 51-100: 线性过渡
+        self.stage3_end = 150     # Gen 101-150: 稀疏为主
+        # Gen 151+: 纯稀疏
+
+        # 平局率阈值：只有平局率低于此值才开始增加稀疏奖励
+        self.draw_rate_threshold = 0.90  # 90%平局率阈值
+        self.current_draw_rate = 1.0     # 当前平局率（初始假设100%）
+        self.sparse_enabled = False      # 是否启用稀疏奖励增加
+
+    def update_draw_rate(self, draw_rate: float) -> None:
+        """更新当前平局率"""
+        self.current_draw_rate = draw_rate
+        # 只有当平局率低于阈值时才启用稀疏奖励增加
+        if draw_rate < self.draw_rate_threshold:
+            if not self.sparse_enabled:
+                print(f"[Curriculum] 平局率 {draw_rate:.1%} < {self.draw_rate_threshold:.0%}，启用稀疏奖励增加")
+            self.sparse_enabled = True
 
     def get_weights(self, generation: int) -> Tuple[float, float]:
-        """获取当前世代的奖励权重 (dense_weight, sparse_weight)"""
+        """获取当前世代的奖励权重 (dense_weight, sparse_weight)
+
+        如果平局率仍然>=90%，则保持密集奖励为主，不增加稀疏奖励
+        """
+        # 如果平局率仍然很高，保持密集奖励为主
+        if not self.sparse_enabled:
+            return 0.8, 0.2
+
+        # 平局率已降低，按世代进行课程学习
         if generation <= self.stage1_end:
-            # Stage 1 (Gen 0-10): 密集奖励为主，快速学习
+            # Stage 1 (Gen 0-50): 密集奖励为主，快速学习
             return 0.8, 0.2
         elif generation <= self.stage2_end:
-            # Stage 2 (Gen 11-25): 线性过渡从(0.8, 0.2)到(0.1, 0.9)
-            # 在这个阶段，密集奖励逐渐减少，稀疏奖励逐渐增加
+            # Stage 2 (Gen 51-100): 线性过渡从(0.8, 0.2)到(0.1, 0.9)
             progress = (generation - self.stage1_end) / (self.stage2_end - self.stage1_end)
             dense_weight = 0.8 - 0.7 * progress  # 0.8 → 0.1
             sparse_weight = 0.2 + 0.7 * progress  # 0.2 → 0.9
             return dense_weight, sparse_weight
         elif generation <= self.stage3_end:
-            # Stage 3 (Gen 26-40): 稀疏奖励为主，优化目标
+            # Stage 3 (Gen 101-150): 稀疏奖励为主，优化目标
             return 0.1, 0.9
         else:
-            # Stage 4 (Gen 41+): 纯稀疏奖励，完全自主学习
+            # Stage 4 (Gen 151+): 纯稀疏奖励，完全自主学习
             return 0.0, 1.0
 
     def get_stage(self, generation: int) -> int:
         """获取当前训练阶段"""
+        if not self.sparse_enabled:
+            return 0  # 预热阶段（平局率仍然很高）
         if generation <= self.stage1_end:
             return 1
         elif generation <= self.stage2_end:
@@ -466,9 +492,15 @@ class AdaptiveRewardSystem:
         self.shaping = RewardShaping(generation)
 
         stage = self.curriculum.get_stage(generation)
-        print(f"Generation {generation} - Stage {stage}: "
+        stage_name = "预热" if stage == 0 else f"Stage {stage}"
+        print(f"Generation {generation} - {stage_name}: "
               f"Dense={self.dense_weight:.1%}, Sparse={self.sparse_weight:.1%}, "
-              f"Shaping={self.shaping.shaping_strength:.2f}")
+              f"Shaping={self.shaping.shaping_strength:.2f}, "
+              f"SparseEnabled={self.curriculum.sparse_enabled}")
+
+    def update_draw_rate(self, draw_rate: float) -> None:
+        """更新平局率，用于自适应奖励切换"""
+        self.curriculum.update_draw_rate(draw_rate)
 
     def calculate_reward(
         self,

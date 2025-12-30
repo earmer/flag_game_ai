@@ -110,19 +110,23 @@ class TournamentStrategy(MatchupStrategy):
 
 
 class AdaptiveMatchupStrategy(MatchupStrategy):
-    """自适应配对策略 - 根据世代自动选择策略"""
+    """自适应配对策略 - 根据四阶段训练流程自动选择策略"""
 
     def __init__(
         self,
-        round_robin_until: int = 10,
-        tournament_games: int = 4
+        round_robin_until: int = 20,
+        tournament_games: int = 8
     ):
         """
         Args:
-            round_robin_until: 在此世代之前使用循环赛
+            round_robin_until: 阶段1结束世代（循环赛）
             tournament_games: 锦标赛每个体对战次数
         """
-        self.round_robin_until = round_robin_until
+        self.stage1_end = 50      # Gen 0-50: 高强度循环赛
+        self.stage2_end = 100     # Gen 51-100: 混合模式
+        self.stage3_end = 150     # Gen 101-150: 锦标赛为主
+        # Gen 151+: 精英对抗
+
         self.round_robin = RoundRobinStrategy()
         self.tournament = TournamentStrategy(tournament_games)
 
@@ -132,15 +136,71 @@ class AdaptiveMatchupStrategy(MatchupStrategy):
         generation: int
     ) -> List[Tuple[Individual, Individual]]:
         """
-        根据世代选择策略
+        根据四阶段训练流程选择配对策略
 
-        - Gen 0-10: 循环赛（充分评估）
-        - Gen 11+: 锦标赛（加速训练）
+        - Stage 1 (Gen 0-50): 循环赛（充分评估）
+        - Stage 2 (Gen 51-100): 混合模式（50%循环赛+锦标赛）
+        - Stage 3 (Gen 101-150): 锦标赛为主
+        - Stage 4 (Gen 151+): 精英对抗（前4名循环赛）
         """
-        if generation <= self.round_robin_until:
+        if generation <= self.stage1_end:
+            # Stage 1: 完整循环赛
             return self.round_robin.create_matchups(population, generation)
-        else:
+        elif generation <= self.stage2_end:
+            # Stage 2: 混合模式
+            return self._mixed_matchups(population, generation)
+        elif generation <= self.stage3_end:
+            # Stage 3: 锦标赛
             return self.tournament.create_matchups(population, generation)
+        else:
+            # Stage 4: 精英对抗
+            return self._elite_matchups(population, generation)
+
+    def _mixed_matchups(
+        self,
+        population: List[Individual],
+        generation: int
+    ) -> List[Tuple[Individual, Individual]]:
+        """混合模式：循环赛+锦标赛"""
+        # 前4名进行循环赛
+        sorted_pop = sorted(population, key=lambda x: x.fitness, reverse=True)
+        top_half = sorted_pop[:len(sorted_pop)//2]
+        bottom_half = sorted_pop[len(sorted_pop)//2:]
+
+        matchups = []
+        # 前半部分循环赛
+        for i in range(len(top_half)):
+            for j in range(i + 1, len(top_half)):
+                matchups.append((top_half[i], top_half[j]))
+
+        # 后半部分锦标赛
+        matchups.extend(self.tournament.create_matchups(bottom_half, generation))
+
+        return matchups
+
+    def _elite_matchups(
+        self,
+        population: List[Individual],
+        generation: int
+    ) -> List[Tuple[Individual, Individual]]:
+        """精英对抗：前4名高强度循环赛"""
+        sorted_pop = sorted(population, key=lambda x: x.fitness, reverse=True)
+        elites = sorted_pop[:4]
+        challengers = sorted_pop[4:]
+
+        matchups = []
+        # 精英之间多轮循环赛
+        for _ in range(3):  # 3轮
+            for i in range(len(elites)):
+                for j in range(i + 1, len(elites)):
+                    matchups.append((elites[i], elites[j]))
+
+        # 挑战者与精英对战
+        for challenger in challengers:
+            for elite in elites[:2]:  # 与前2名精英对战
+                matchups.append((challenger, elite))
+
+        return matchups
 
 
 # ============================================================

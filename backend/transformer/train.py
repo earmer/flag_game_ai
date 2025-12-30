@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any
 import json
 import os
+import shutil
 from pathlib import Path
 
 from _import_bootstrap import TORCH_AVAILABLE, NUMPY_AVAILABLE
@@ -36,16 +37,16 @@ class TrainingConfig:
     mutation_rate: float = 0.1
     initial_temperature: float = 1.0
     min_temperature: float = 0.1
-    cooling_rate: float = 0.95
+    cooling_rate: float = 0.99  # 放缓退火速度（原0.95过快）
 
     # 训练参数
-    num_generations: int = 50
+    num_generations: int = 200   # 增加到200代（原50代，支持100000场对战）
     max_game_steps: int = 1000
     action_temperature: float = 1.0
 
     # 对抗训练参数
-    round_robin_until: int = 10
-    tournament_games: int = 4
+    round_robin_until: int = 20  # 延长循环赛阶段（原10代）
+    tournament_games: int = 8    # 增加对局数量（原4场）
     num_workers: int = 4
 
     # 模型参数
@@ -184,8 +185,12 @@ class CheckpointManager:
         if len(self.best_checkpoints) > self.keep_best_n:
             _, old_path = self.best_checkpoints.pop()
             if old_path.exists():
-                old_path.unlink()
-                print(f"删除旧检查点: {old_path}")
+                # FIX: Use shutil.rmtree() for directories instead of unlink()
+                try:
+                    shutil.rmtree(old_path)
+                    print(f"删除旧检查点: {old_path}")
+                except Exception as e:
+                    print(f"警告: 无法删除检查点 {old_path}: {e}")
 
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
         """加载检查点"""
@@ -240,7 +245,8 @@ class TrainingLogger:
             'generation', 'timestamp', 'temperature',
             'num_games', 'avg_steps', 'avg_duration_ms',
             'best_fitness', 'avg_fitness', 'worst_fitness',
-            'l_wins', 'r_wins', 'draws'
+            'l_wins', 'r_wins', 'draws', 'draw_rate',
+            'avg_flags_captured', 'sparse_enabled'
         ])
 
         # 创建文本日志文件
@@ -258,6 +264,10 @@ class TrainingLogger:
         """记录世代信息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # 计算平局率
+        total_games = stats['num_games']
+        draw_rate = stats['draws'] / total_games if total_games > 0 else 0.0
+
         # 写入CSV
         self.csv_writer.writerow([
             generation,
@@ -271,22 +281,26 @@ class TrainingLogger:
             f"{stats['worst_fitness']:.2f}",
             stats['l_wins'],
             stats['r_wins'],
-            stats['draws']
+            stats['draws'],
+            f"{draw_rate:.2%}",
+            f"{stats.get('avg_flags_captured', 0):.2f}",
+            stats.get('sparse_enabled', False)
         ])
         self.csv_file.flush()
 
         # 写入文本日志
         elapsed = time.time() - self.start_time
         log_msg = (
-            f"[Gen {generation:3d}] "
-            f"T={temperature:.3f} | "
-            f"Games={stats['num_games']:3d} | "
-            f"Fitness: {stats['best_fitness']:6.2f} / "
+            f"[世代 {generation:3d}] "
+            f"温度={temperature:.3f} | "
+            f"对局={stats['num_games']:3d} "
+            f"(平均{stats['avg_steps']:.0f}步/{stats['avg_duration_ms']/1000:.1f}秒) | "
+            f"适应度: {stats['best_fitness']:6.2f} / "
             f"{stats['avg_fitness']:6.2f} / "
             f"{stats['worst_fitness']:6.2f} | "
-            f"Wins: L={stats['l_wins']:3d} R={stats['r_wins']:3d} "
-            f"D={stats['draws']:2d} | "
-            f"Time: {elapsed:.1f}s"
+            f"胜场: L={stats['l_wins']:3d} R={stats['r_wins']:3d} "
+            f"平={stats['draws']:2d} ({draw_rate:.0%}) | "
+            f"世代训练时长: {elapsed:.1f}秒"
         )
 
         print(log_msg)
@@ -438,6 +452,11 @@ class EvolutionaryTrainer:
                 generation
             )
 
+            # 2.5 更新平局率到奖励系统（用于自适应奖励切换）
+            draw_rate = stats['draws'] / stats['num_games'] if stats['num_games'] > 0 else 1.0
+            self.reward_system.update_draw_rate(draw_rate)
+            stats['sparse_enabled'] = self.reward_system.curriculum.sparse_enabled
+
             # 3. 记录日志
             self.logger.log_generation(generation, temperature, stats)
 
@@ -458,6 +477,10 @@ class EvolutionaryTrainer:
             # 5. 遗传演化（最后一代不演化）
             if generation < self.config.num_generations - 1:
                 self._evolve_population(temperature)
+
+            # 6. 定期基准测试（每10代）
+            if generation % 10 == 0:
+                self._run_benchmark(generation)
 
         # 训练结束
         self.logger.log_message("\n" + "=" * 60)
@@ -481,6 +504,58 @@ class EvolutionaryTrainer:
 
         self.population.individuals = new_individuals
         self.logger.log_message("✓ 遗传演化完成")
+
+    def _run_benchmark(self, generation: int) -> None:
+        """运行基准测试"""
+        try:
+            from benchmark import run_benchmark, BenchmarkResult
+            from game_interface import TransformerAgent
+
+            self.logger.log_message(f"\n--- 基准测试 (Gen {generation}) ---")
+
+            # 获取最优个体
+            self.population.sort_by_fitness()
+            best_individual = self.population.individuals[0]
+
+            # 创建Transformer智能体
+            agent = TransformerAgent(
+                team="L",
+                model=best_individual.model,
+                temperature=0.5  # 较低温度，更确定性
+            )
+
+            # 运行基准测试（20场快速测试）
+            result = run_benchmark(
+                transformer_agent=agent,
+                num_games=20,
+                max_steps=self.config.max_game_steps
+            )
+            result.generation = generation
+
+            # 记录结果
+            self.logger.log_message(
+                f"基准测试结果: 胜率={result.win_rate:.1%}, "
+                f"平局率={result.draw_rate:.1%}, "
+                f"L胜={result.left_wins}, R胜={result.right_wins}"
+            )
+
+            # 检查阶段升级条件
+            self._check_stage_upgrade(generation, result)
+
+        except Exception as e:
+            self.logger.log_message(f"基准测试失败: {e}")
+
+    def _check_stage_upgrade(self, generation: int, benchmark_result) -> None:
+        """检查是否满足阶段升级条件"""
+        stage = self.reward_system.curriculum.get_stage(generation)
+        win_rate = benchmark_result.win_rate
+
+        if stage == 1 and win_rate >= 0.50:
+            self.logger.log_message(f"✓ Stage 1升级条件满足: 胜率{win_rate:.1%} >= 50%")
+        elif stage == 2 and win_rate >= 0.85:
+            self.logger.log_message(f"✓ Stage 2升级条件满足: 胜率{win_rate:.1%} >= 85%")
+        elif stage == 3 and win_rate >= 0.95:
+            self.logger.log_message(f"✓ Stage 3升级条件满足: 胜率{win_rate:.1%} >= 95%")
 
     def _resume_from_checkpoint(self, checkpoint_path: str) -> None:
         """从检查点恢复训练"""

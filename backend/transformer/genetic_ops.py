@@ -55,7 +55,7 @@ def tournament_selection(
     temperature: float = 1.0
 ) -> Individual:
     """
-    锦标赛选择
+    锦标赛选择（改进版：归一化适应度以增强选择压力）
 
     Args:
         population: 种群列表
@@ -69,12 +69,24 @@ def tournament_selection(
     tournament = random.sample(population, min(tournament_size, len(population)))
 
     # 温度影响选择：温度高时更随机，温度低时更确定
-    if temperature > 0.5 and NUMPY_AVAILABLE:
-        # 高温：使用softmax概率选择
+    if temperature > 0.3 and NUMPY_AVAILABLE:
+        # 使用归一化softmax概率选择
         fitnesses = np.array([ind.fitness for ind in tournament])
+
+        # 归一化适应度到[0, 1]范围，放大差异
+        f_min, f_max = np.min(fitnesses), np.max(fitnesses)
+        if f_max - f_min > 1e-6:
+            # 归一化后乘以10，增强选择压力
+            normalized = (fitnesses - f_min) / (f_max - f_min) * 10.0
+        else:
+            # 适应度相同，均匀选择
+            normalized = np.ones_like(fitnesses)
+
+        # 应用温度缩放
+        scaled = normalized / temperature
         # 避免数值溢出
-        fitnesses = fitnesses - np.max(fitnesses)
-        probs = np.exp(fitnesses / temperature)
+        scaled = scaled - np.max(scaled)
+        probs = np.exp(scaled)
         probs = probs / np.sum(probs)
 
         winner = np.random.choice(tournament, p=probs)
