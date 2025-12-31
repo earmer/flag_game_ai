@@ -50,6 +50,7 @@ class StageConfig:
 
     # 对局参数
     games_per_individual: int   # 每个体每代对局数
+    max_game_steps: int         # 每局最大步数
 
     # 遗传参数
     initial_temperature: float
@@ -94,6 +95,7 @@ class StageConfig:
             'elite_size': self.elite_size,
             'tournament_size': self.tournament_size,
             'games_per_individual': self.games_per_individual,
+            'max_game_steps': self.max_game_steps,
             'round_per_game': self.round_per_game,
             'initial_temperature': self.initial_temperature,
             'min_temperature': self.min_temperature,
@@ -178,6 +180,7 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         elite_size=2,
         tournament_size=3,
         games_per_individual=24,
+        max_game_steps=500,  # 基础阶段使用较短步数，加快迭代
         round_per_game=5,  # 每个配对3轮对战
         initial_temperature=1.5,
         min_temperature=0.1,

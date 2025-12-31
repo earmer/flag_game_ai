@@ -253,7 +253,8 @@ def run_single_game(
     max_steps: int = 1000,
     temperature: float = 1.0,
     seed: Optional[int] = None,
-    use_fixed_flags: bool = False
+    use_fixed_flags: bool = False,
+    device: Optional[Any] = None
 ) -> GameResult:
     """
     执行单场对战
@@ -266,6 +267,7 @@ def run_single_game(
         temperature: 动作采样温度
         seed: 随机种子（可选）
         use_fixed_flags: 是否使用固定旗帜位置
+        device: torch.device 设备（可选）
 
     Returns:
         GameResult对象
@@ -297,13 +299,15 @@ def run_single_game(
     agent_l = TransformerAgent(
         model=individual_l.model,
         team="L",
-        temperature=temperature
+        temperature=temperature,
+        device=device
     )
 
     agent_r = TransformerAgent(
         model=individual_r.model,
         team="R",
-        temperature=temperature
+        temperature=temperature,
+        device=device
     )
 
     # 4. 运行对战
@@ -359,7 +363,8 @@ class ParallelGameExecutor:
         max_steps: int = 1000,
         temperature: float = 1.0,
         show_progress: bool = True,
-        fixed_flag_indices: Optional[range] = None
+        fixed_flag_indices: Optional[range] = None,
+        device: Optional[Any] = None
     ) -> List[GameResult]:
         """
         并行执行所有对战
@@ -370,6 +375,7 @@ class ParallelGameExecutor:
             max_steps: 单场最大步数
             temperature: 采样温度
             show_progress: 是否显示进度条
+            device: torch.device 设备（可选）
 
         Returns:
             所有对战结果列表
@@ -395,7 +401,8 @@ class ParallelGameExecutor:
                     max_steps,
                     temperature,
                     seed=None,
-                    use_fixed_flags=use_fixed_flags
+                    use_fixed_flags=use_fixed_flags,
+                    device=device
                 )
                 future_to_matchup[future] = (ind_l, ind_r)
 
@@ -517,7 +524,8 @@ class AdversarialTrainer:
         hof_sample_rate: float = 0.0,
         round_per_game: int = 1,
         fixed_flag_ratio: float = 0.1,
-        use_fixed_flags: bool = True
+        use_fixed_flags: bool = True,
+        device: Optional[Any] = None
     ):
         """
         Args:
@@ -531,6 +539,7 @@ class AdversarialTrainer:
             round_per_game: 每个配对的对战轮次（默认1轮）
             fixed_flag_ratio: 固定旗帜游戏比例（0.0-1.0）
             use_fixed_flags: 是否启用固定旗帜游戏
+            device: torch.device 设备（可选）
         """
         self.matchup_strategy = matchup_strategy
         self.reward_system = reward_system
@@ -542,6 +551,7 @@ class AdversarialTrainer:
         self.round_per_game = round_per_game
         self.fixed_flag_ratio = fixed_flag_ratio
         self.use_fixed_flags = use_fixed_flags
+        self.device = device
 
     def _create_agent_from_state(self, state_dict: Dict, team: str) -> 'TransformerAgent':
         """
@@ -687,7 +697,8 @@ class AdversarialTrainer:
             self.reward_system,
             self.max_steps,
             self.temperature,
-            fixed_flag_indices=fixed_flag_indices
+            fixed_flag_indices=fixed_flag_indices,
+            device=self.device
         )
 
         # 5. 更新适应度

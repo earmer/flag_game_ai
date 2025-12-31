@@ -233,7 +233,8 @@ class TransformerAgent(PolicyAgent):
         team: str,
         max_tokens: int = 32,
         temperature: float = 1.0,
-        action_vocab: List[str] = ["", "up", "down", "left", "right"]
+        action_vocab: List[str] = ["", "up", "down", "left", "right"],
+        device: Optional[Any] = None
     ):
         """
         Args:
@@ -242,12 +243,19 @@ class TransformerAgent(PolicyAgent):
             max_tokens: token序列最大长度
             temperature: 动作采样温度
             action_vocab: 动作词汇表
+            device: torch.device 设备
         """
         super().__init__(team)
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.action_vocab = action_vocab
+
+        # 设备配置
+        if device is None and TORCH_AVAILABLE:
+            self.device = torch.device("cpu")
+        else:
+            self.device = device
 
         # 设置为评估模式
         if hasattr(self.model, 'eval'):
@@ -275,7 +283,13 @@ class TransformerAgent(PolicyAgent):
                 (type_ids, features, padding_mask, my_player_indices)
             ])
 
-            # 4. 模型推理
+            # 4. 将batch张量移动到设备
+            batch.type_ids = batch.type_ids.to(self.device)
+            batch.features = batch.features.to(self.device)
+            batch.padding_mask = batch.padding_mask.to(self.device)
+            batch.my_player_token_indices = batch.my_player_token_indices.to(self.device)
+
+            # 5. 模型推理
             with torch.no_grad():
                 action_logits = self.model(
                     type_ids=batch.type_ids,
@@ -284,14 +298,14 @@ class TransformerAgent(PolicyAgent):
                     my_player_token_indices=batch.my_player_token_indices
                 )  # (1, num_players, num_actions)
 
-            # 5. 移除batch维度
+            # 6. 移除batch维度
             action_logits = action_logits.squeeze(0)  # (num_players, num_actions)
 
-            # 6. 获取玩家名称
+            # 7. 获取玩家名称
             my_players = status_dict.get("myteamPlayer", [])
             player_names = [p["name"] for p in my_players]
 
-            # 7. 采样动作
+            # 8. 采样动作
             actions = sample_actions(
                 action_logits,
                 player_names,

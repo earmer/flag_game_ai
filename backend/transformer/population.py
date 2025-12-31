@@ -11,6 +11,8 @@ from _import_bootstrap import NUMPY_AVAILABLE
 if NUMPY_AVAILABLE:
     import numpy as np
 
+import torch
+
 from transformer_model import CTFTransformer, CTFTransformerConfig, build_ctf_transformer
 
 
@@ -96,13 +98,16 @@ class PopulationConfig:
 class Population:
     """种群管理器"""
 
-    def __init__(self, config: PopulationConfig, model_config: Optional[CTFTransformerConfig] = None):
+    def __init__(self, config: PopulationConfig, model_config: Optional[CTFTransformerConfig] = None, device: Optional[torch.device] = None):
         self.config = config
         self.individuals: List[Individual] = []
         self.current_generation: int = 0
         self.history: List[Dict[str, Any]] = []
         self.best_individual: Optional[Individual] = None
         self.best_fitness: float = float('-inf')
+
+        # 设备配置
+        self.device = device if device is not None else torch.device("cpu")
 
         # Auto-initialize if model_config provided
         if model_config is not None:
@@ -113,6 +118,8 @@ class Population:
         self.individuals = []
         for i in range(self.config.population_size):
             model = build_ctf_transformer(model_config)
+            # 将模型移动到指定设备
+            model = model.to(self.device)
             individual = Individual(
                 id=f"gen0_ind{i}",
                 model=model,
@@ -120,7 +127,7 @@ class Population:
             )
             self.individuals.append(individual)
 
-        print(f"✓ Initialized population with {len(self.individuals)} individuals")
+        print(f"✓ Initialized population with {len(self.individuals)} individuals on {self.device}")
 
     def sort_by_fitness(self) -> None:
         """按适应度降序排序"""

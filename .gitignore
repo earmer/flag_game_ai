@@ -11,3 +11,6 @@ wheels/
 
 # File system
 .DS_Store
+
+# Claude Desktop / Agent settings
+.claude/
