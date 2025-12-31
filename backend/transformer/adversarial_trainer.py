@@ -115,17 +115,24 @@ class AdaptiveMatchupStrategy(MatchupStrategy):
     def __init__(
         self,
         round_robin_until: int = 20,
-        tournament_games: int = 8
+        tournament_games: int = 8,
+        stage_boundaries: Optional[List[int]] = None
     ):
         """
         Args:
             round_robin_until: 阶段1结束世代（循环赛）
             tournament_games: 锦标赛每个体对战次数
+            stage_boundaries: 阶段边界列表 [stage1_end, stage2_end, stage3_end]
+                             默认 [50, 100, 150]，可配置为 [160, 300, 600, 800]
         """
-        self.stage1_end = 50      # Gen 0-50: 高强度循环赛
-        self.stage2_end = 100     # Gen 51-100: 混合模式
-        self.stage3_end = 150     # Gen 101-150: 锦标赛为主
-        # Gen 151+: 精英对抗
+        # 参数化阶段边界（支持自定义配置）
+        if stage_boundaries is None:
+            stage_boundaries = [50, 100, 150]  # 默认边界（向后兼容）
+
+        self.stage1_end = stage_boundaries[0]  # Gen 0-stage1_end: 高强度循环赛
+        self.stage2_end = stage_boundaries[1]  # Gen stage1_end+1 - stage2_end: 混合模式
+        self.stage3_end = stage_boundaries[2]  # Gen stage2_end+1 - stage3_end: 锦标赛为主
+        # Gen stage3_end+1+: 精英对抗
 
         self.round_robin = RoundRobinStrategy()
         self.tournament = TournamentStrategy(tournament_games)
@@ -433,31 +440,33 @@ def update_fitness_from_results(
 
     # 3. 累积统计
     for result in results:
-        ind_l = id_to_individual[result.agent_l_id]
-        ind_r = id_to_individual[result.agent_r_id]
+        # 使用.get()处理HoF对手（不在种群中）
+        ind_l = id_to_individual.get(result.agent_l_id)
+        ind_r = id_to_individual.get(result.agent_r_id)
 
-        # 更新对战次数
-        ind_l.epoch_games_played += 1
-        ind_r.epoch_games_played += 1
+        # 更新L侧个体（如果在种群中）
+        if ind_l:
+            ind_l.epoch_games_played += 1
+            if result.winner == "L":
+                ind_l.epoch_wins += 1
+            elif result.winner == "R":
+                ind_l.epoch_losses += 1
+            else:
+                ind_l.epoch_draws += 1
+            ind_l.epoch_total_reward += result.l_total_reward
+            ind_l.flags_captured += result.l_flags_captured
 
-        # 更新胜负
-        if result.winner == "L":
-            ind_l.epoch_wins += 1
-            ind_r.epoch_losses += 1
-        elif result.winner == "R":
-            ind_r.epoch_wins += 1
-            ind_l.epoch_losses += 1
-        else:
-            ind_l.epoch_draws += 1
-            ind_r.epoch_draws += 1
-
-        # 累积奖励
-        ind_l.epoch_total_reward += result.l_total_reward
-        ind_r.epoch_total_reward += result.r_total_reward
-
-        # 累积其他统计
-        ind_l.flags_captured += result.l_flags_captured
-        ind_r.flags_captured += result.r_flags_captured
+        # 更新R侧个体（如果在种群中，HoF对手会被跳过）
+        if ind_r:
+            ind_r.epoch_games_played += 1
+            if result.winner == "R":
+                ind_r.epoch_wins += 1
+            elif result.winner == "L":
+                ind_r.epoch_losses += 1
+            else:
+                ind_r.epoch_draws += 1
+            ind_r.epoch_total_reward += result.r_total_reward
+            ind_r.flags_captured += result.r_flags_captured
 
     # 4. 计算适应度
     for ind in population:
@@ -491,7 +500,9 @@ class AdversarialTrainer:
         reward_system: 'AdaptiveRewardSystem',
         num_workers: int = 4,
         max_steps: int = 1000,
-        temperature: float = 1.0
+        temperature: float = 1.0,
+        hof: Optional['HallOfFame'] = None,
+        hof_sample_rate: float = 0.0
     ):
         """
         Args:
@@ -500,12 +511,45 @@ class AdversarialTrainer:
             num_workers: 并行工作进程数
             max_steps: 单场最大步数
             temperature: 采样温度
+            hof: Hall of Fame对象（可选）
+            hof_sample_rate: HoF对手采样率（0.0-1.0）
         """
         self.matchup_strategy = matchup_strategy
         self.reward_system = reward_system
         self.executor = ParallelGameExecutor(num_workers)
         self.max_steps = max_steps
         self.temperature = temperature
+        self.hof = hof
+        self.hof_sample_rate = hof_sample_rate
+
+    def _create_agent_from_state(self, state_dict: Dict, team: str) -> 'TransformerAgent':
+        """
+        从HoF的state_dict创建TransformerAgent
+
+        Args:
+            state_dict: 模型的state_dict
+            team: 队伍标识 ("L" or "R")
+
+        Returns:
+            TransformerAgent实例
+        """
+        from game_interface import TransformerAgent
+        from transformer_model import CTFTransformer, CTFTransformerConfig
+
+        # 创建新模型并加载权重
+        config = CTFTransformerConfig()
+        model = CTFTransformer(config)
+        model.load_state_dict(state_dict)
+        model.eval()  # 设置为评估模式
+
+        # 创建智能体
+        agent = TransformerAgent(
+            model=model,
+            team=team,
+            temperature=self.temperature
+        )
+
+        return agent
 
     def train_epoch(
         self,
@@ -526,7 +570,39 @@ class AdversarialTrainer:
         matchups = self.matchup_strategy.create_matchups(population, generation)
         print(f"世代 {generation}: 创建 {len(matchups)} 场对战")
 
-        # 2. 并行执行对战
+        # 2. HoF对手采样（如果启用）
+        hof_matchups_count = 0
+        if self.hof and self.hof_sample_rate > 0 and not self.hof.is_empty():
+            import random
+            from transformer_model import CTFTransformer, CTFTransformerConfig
+
+            modified_matchups = []
+            for ind_l, ind_r in matchups:
+                # 按概率替换R侧对手为HoF成员
+                if random.random() < self.hof_sample_rate:
+                    hof_member = self.hof.sample_opponent()
+                    if hof_member:
+                        # 创建临时Individual对象（只用于对战）
+                        hof_config = CTFTransformerConfig()
+                        hof_model = CTFTransformer(hof_config)
+                        hof_model.load_state_dict(hof_member['model_state_dict'])
+                        hof_individual = Individual(
+                            id=f"hof_stage{hof_member['stage']}_gen{hof_member['generation']}",
+                            model=hof_model,
+                            generation=hof_member['generation']
+                        )
+                        modified_matchups.append((ind_l, hof_individual))
+                        hof_matchups_count += 1
+                    else:
+                        modified_matchups.append((ind_l, ind_r))
+                else:
+                    modified_matchups.append((ind_l, ind_r))
+
+            matchups = modified_matchups
+            if hof_matchups_count > 0:
+                print(f"  └─ HoF采样: {hof_matchups_count}/{len(matchups)} 场对战使用HoF对手")
+
+        # 3. 并行执行对战
         results = self.executor.execute_matchups(
             matchups,
             self.reward_system,
@@ -534,18 +610,19 @@ class AdversarialTrainer:
             self.temperature
         )
 
-        # 3. 更新适应度
+        # 4. 更新适应度
         update_fitness_from_results(population, results)
 
-        # 4. 收集统计信息
-        stats = self._collect_statistics(population, results)
+        # 5. 收集统计信息
+        stats = self._collect_statistics(population, results, hof_matchups_count)
 
         return stats
 
     def _collect_statistics(
         self,
         population: List[Individual],
-        results: List[GameResult]
+        results: List[GameResult],
+        hof_matchups_count: int = 0
     ) -> Dict[str, Any]:
         """收集训练统计信息"""
         if len(results) == 0:
@@ -558,7 +635,8 @@ class AdversarialTrainer:
                 "draws": 0,
                 "best_fitness": 0,
                 "avg_fitness": 0,
-                "worst_fitness": 0
+                "worst_fitness": 0,
+                "hof_matchups": 0
             }
 
         stats = {
@@ -570,7 +648,8 @@ class AdversarialTrainer:
             "draws": sum(1 for r in results if r.winner is None),
             "best_fitness": max(ind.fitness for ind in population),
             "avg_fitness": sum(ind.fitness for ind in population) / len(population),
-            "worst_fitness": min(ind.fitness for ind in population)
+            "worst_fitness": min(ind.fitness for ind in population),
+            "hof_matchups": hof_matchups_count
         }
         return stats
 

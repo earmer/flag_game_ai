@@ -211,6 +211,46 @@ class Population:
         for ind in self.individuals:
             ind.fitness = 0.0
 
+    def resize(self, new_size: int, model_config: CTFTransformerConfig) -> None:
+        """
+        动态调整种群大小（用于4阶段训练）
+
+        Args:
+            new_size: 新的种群大小
+            model_config: 模型配置（用于创建新个体）
+        """
+        current_size = len(self.individuals)
+
+        if new_size == current_size:
+            return  # 无需调整
+
+        if new_size > current_size:
+            # 扩大种群：保留所有现有个体 + 随机初始化新个体
+            num_new = new_size - current_size
+            print(f"[Population] 扩大种群: {current_size} → {new_size} (+{num_new}个新个体)")
+
+            for i in range(num_new):
+                model = build_ctf_transformer(model_config)
+                individual = Individual(
+                    id=f"gen{self.current_generation}_expand{i}",
+                    model=model,
+                    generation=self.current_generation
+                )
+                self.individuals.append(individual)
+
+        else:
+            # 缩小种群：按适应度排序，保留前N个
+            num_removed = current_size - new_size
+            print(f"[Population] 缩小种群: {current_size} → {new_size} (-{num_removed}个个体)")
+
+            # 排序并保留最优个体
+            self.sort_by_fitness()
+            self.individuals = self.individuals[:new_size]
+
+        # 更新配置
+        self.config.population_size = new_size
+        print(f"✓ 种群大小已调整为 {new_size}")
+
     def print_summary(self) -> None:
         """打印种群摘要"""
         stats = self.get_statistics()

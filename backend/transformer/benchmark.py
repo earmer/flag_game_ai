@@ -191,8 +191,6 @@ def run_benchmark(
     Returns:
         BenchmarkResult对象
     """
-    from sim_env import CTFGameSimulator, Geometry
-
     if seed is not None:
         random.seed(seed)
 
@@ -260,48 +258,44 @@ def _run_single_game(
     max_steps: int = 1000
 ) -> Dict[str, Any]:
     """运行单局游戏"""
-    from sim_env import CTFGameSimulator, Geometry
+    from sim_env import CTFSim
+    from lib.tree_features import Geometry
 
-    # 创建游戏模拟器
-    geometry = Geometry()
-    sim = CTFGameSimulator(geometry)
+    # 创建游戏模拟器并初始化
+    sim = CTFSim(width=20, height=20, num_players=3, num_flags=9, seed=None)
+    sim.reset()
+
+    # 从init_payload创建Geometry对象
+    geometry_l = Geometry.from_init(sim.init_payload("L"))
+    geometry_r = Geometry.from_init(sim.init_payload("R"))
 
     # 重置智能体
     l_agent.reset()
     r_agent.reset()
 
     # 运行游戏
+    step = 0
     for step in range(max_steps):
+        # 检查游戏是否结束
+        if sim.done:
+            break
+
         status_l = sim.status("L")
         status_r = sim.status("R")
 
-        # 检查游戏是否结束
-        if sim.is_game_over():
-            break
-
         # 获取动作
-        l_actions = l_agent.select_actions(status_l, geometry)
-        r_actions = r_agent.select_actions(status_r, geometry)
+        l_actions = l_agent.select_actions(status_l, geometry_l)
+        r_actions = r_agent.select_actions(status_r, geometry_r)
 
         # 执行动作
         sim.step(l_actions, r_actions)
 
-    # 获取最终状态
-    final_status = sim.status("L")
-    l_score = final_status.get("myteamScore", 0)
-    r_score = final_status.get("opponentScore", 0)
-
-    # 判断胜负
-    if l_score > r_score:
-        winner = "L"
-    elif r_score > l_score:
-        winner = "R"
-    else:
-        winner = None
+    # 获取最终结果
+    result = sim.result()
 
     return {
-        "winner": winner,
-        "l_score": l_score,
-        "r_score": r_score,
-        "steps": step + 1
+        "winner": result.winner,
+        "l_score": result.l_score,
+        "r_score": result.r_score,
+        "steps": result.steps
     }

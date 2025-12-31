@@ -288,17 +288,28 @@ class CurriculumScheduler:
     新增：基于平局率的自适应切换，只有当平局率<90%时才开始增加稀疏奖励
     """
 
-    def __init__(self):
-        # 阶段划分（基于世代）
-        self.stage1_end = 50      # Gen 0-50: 密集为主（延长探索期）
-        self.stage2_end = 100     # Gen 51-100: 线性过渡
-        self.stage3_end = 150     # Gen 101-150: 稀疏为主
-        # Gen 151+: 纯稀疏
+    def __init__(self, stage_boundaries: Optional[List[int]] = None):
+        """
+        Args:
+            stage_boundaries: 阶段边界列表 [stage1_end, stage2_end, stage3_end]
+                             默认 [50, 100, 150]，可配置为 [160, 300, 600, 800]
+        """
+        # 参数化阶段边界（支持自定义配置）
+        if stage_boundaries is None:
+            stage_boundaries = [50, 100, 150]  # 默认边界（向后兼容）
+
+        self.stage1_end = stage_boundaries[0]  # Gen 0-stage1_end: 密集为主（延长探索期）
+        self.stage2_end = stage_boundaries[1]  # Gen stage1_end+1 - stage2_end: 线性过渡
+        self.stage3_end = stage_boundaries[2]  # Gen stage2_end+1 - stage3_end: 稀疏为主
+        # Gen stage3_end+1+: 纯稀疏
 
         # 平局率阈值：只有平局率低于此值才开始增加稀疏奖励
         self.draw_rate_threshold = 0.90  # 90%平局率阈值
         self.current_draw_rate = 1.0     # 当前平局率（初始假设100%）
         self.sparse_enabled = False      # 是否启用稀疏奖励增加
+
+        # 手动权重覆盖（用于4阶段训练）
+        self.manual_weights: Optional[Tuple[float, float]] = None
 
     def update_draw_rate(self, draw_rate: float) -> None:
         """更新当前平局率"""
@@ -309,11 +320,31 @@ class CurriculumScheduler:
                 print(f"[Curriculum] 平局率 {draw_rate:.1%} < {self.draw_rate_threshold:.0%}，启用稀疏奖励增加")
             self.sparse_enabled = True
 
+    def set_weights(self, dense_weight: float, sparse_weight: float) -> None:
+        """
+        手动设置奖励权重（用于4阶段训练）
+
+        Args:
+            dense_weight: 密集奖励权重
+            sparse_weight: 稀疏奖励权重
+        """
+        self.manual_weights = (dense_weight, sparse_weight)
+        print(f"[Curriculum] 手动设置权重: dense={dense_weight:.1f}, sparse={sparse_weight:.1f}")
+
+    def clear_manual_weights(self) -> None:
+        """清除手动权重设置，恢复自动计算"""
+        self.manual_weights = None
+
     def get_weights(self, generation: int) -> Tuple[float, float]:
         """获取当前世代的奖励权重 (dense_weight, sparse_weight)
 
-        如果平局率仍然>=90%，则保持密集奖励为主，不增加稀疏奖励
+        如果设置了手动权重，则直接返回手动权重
+        否则，如果平局率仍然>=90%，则保持密集奖励为主，不增加稀疏奖励
         """
+        # 优先返回手动设置的权重
+        if self.manual_weights is not None:
+            return self.manual_weights
+
         # 如果平局率仍然很高，保持密集奖励为主
         if not self.sparse_enabled:
             return 0.8, 0.2
