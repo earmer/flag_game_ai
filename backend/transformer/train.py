@@ -766,7 +766,7 @@ class StagedEvolutionaryTrainer:
             matchup_strategy=matchup_strategy,
             reward_system=self.reward_system,
             num_workers=config.num_workers,
-            max_steps=1000,
+            max_steps=config.max_game_steps,
             temperature=1.0,
             hof=self.hof,
             hof_sample_rate=config.hof_sample_rate,
@@ -938,7 +938,7 @@ class StagedEvolutionaryTrainer:
             result = run_benchmark(
                 transformer_agent=agent,
                 num_games=config.min_benchmark_games,
-                max_steps=1000
+                max_steps=config.max_game_steps
             )
 
             # 计算置信区间

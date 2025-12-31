@@ -208,6 +208,7 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         elite_size=6,
         tournament_size=4,
         games_per_individual=24,
+        max_game_steps=500,  # 统一使用500步
         round_per_game=3,  # 每个配对2轮对战
         initial_temperature=1.0,
         min_temperature=0.15,
@@ -235,6 +236,7 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         elite_size=16,
         tournament_size=5,
         games_per_individual=24,
+        max_game_steps=500,  # 统一使用500步
         round_per_game=3,  # 每个配对1轮对战
         initial_temperature=0.8,
         min_temperature=0.2,
@@ -262,6 +264,7 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         elite_size=8,
         tournament_size=6,
         games_per_individual=24,
+        max_game_steps=500,  # 统一使用500步
         round_per_game=3,  # 每个配对1轮对战
         initial_temperature=0.5,
         min_temperature=0.25,
@@ -305,6 +308,7 @@ def create_quick_test_configs() -> Dict[TrainingStage, StageConfig]:
             elite_size=1,
             tournament_size=2,
             games_per_individual=4,
+            max_game_steps=100,  # 快速测试使用100步
             round_per_game=2,
             initial_temperature=1.0,
             min_temperature=0.1,
