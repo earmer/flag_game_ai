@@ -714,9 +714,11 @@ class StagedEvolutionaryTrainer:
             max_steps=1000,
             temperature=1.0,
             hof=self.hof,
-            hof_sample_rate=config.hof_sample_rate
+            hof_sample_rate=config.hof_sample_rate,
+            round_per_game=config.round_per_game
         )
         self.logger.log_message(f"HoF采样率: {config.hof_sample_rate:.0%}")
+        self.logger.log_message(f"多轮对战: 每个配对 {config.round_per_game} 轮")
 
         # 4. 初始化退火调度器
         from genetic_ops import AnnealingScheduler, AnnealingConfig

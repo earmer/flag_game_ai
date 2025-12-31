@@ -32,11 +32,14 @@ class CTFTransformerConfig:
     max_tokens: int = 32               # 最大token序列长度
 
     # Transformer架构参数
-    d_model: int = 128                 # 模型维度
-    nhead: int = 4                     # 注意力头数
-    num_layers: int = 2                # Transformer层数
-    dim_feedforward: int = 256         # FFN维度
+    d_model: int = 96                  # 模型维度 (从128降至96以支持8层)
+    nhead: int = 8                     # 注意力头数 (从4增至8)
+    num_layers: int = 8                # Transformer层数 (从2增至8)
+    dim_feedforward: int = 192         # FFN维度 (默认值，用于向后兼容)
     dropout: float = 0.1               # Dropout率
+
+    # 可变FFN宽度（漏斗架构：宽→窄）
+    dim_feedforward_per_layer: Optional[Tuple[int, ...]] = None
 
     # 输出参数
     num_players: int = 3               # 玩家数量
@@ -45,6 +48,26 @@ class CTFTransformerConfig:
     # 训练参数
     use_layer_norm: bool = True        # 是否使用LayerNorm
     activation: str = "gelu"           # 激活函数
+
+    def __post_init__(self):
+        """验证配置并设置默认的可变FFN宽度"""
+        # 如果未指定dim_feedforward_per_layer，使用漏斗模式
+        if self.dim_feedforward_per_layer is None:
+            # 8层漏斗架构: 192, 192, 160, 160, 128, 128, 96, 96
+            if self.num_layers == 8:
+                default_widths = (192, 192, 160, 160, 128, 128, 96, 96)
+            else:
+                # 其他层数：使用统一的dim_feedforward
+                default_widths = tuple([self.dim_feedforward] * self.num_layers)
+
+            object.__setattr__(self, 'dim_feedforward_per_layer', default_widths)
+
+        # 验证：长度必须匹配num_layers
+        if len(self.dim_feedforward_per_layer) != self.num_layers:
+            raise ValueError(
+                f"dim_feedforward_per_layer length ({len(self.dim_feedforward_per_layer)}) "
+                f"must match num_layers ({self.num_layers})"
+            )
 
 
 class CTFTransformer(nn.Module):
@@ -71,21 +94,20 @@ class CTFTransformer(nn.Module):
         if config.use_layer_norm:
             self.input_norm = nn.LayerNorm(config.d_model)
 
-        # Transformer编码器层
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=config.d_model,
-            nhead=config.nhead,
-            dim_feedforward=config.dim_feedforward,
-            dropout=config.dropout,
-            activation=config.activation,
-            batch_first=True,
-            norm_first=False
-        )
-
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=config.num_layers
-        )
+        # Transformer编码器层（可变FFN宽度）
+        # 每层独立创建，支持不同的dim_feedforward
+        self.encoder_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=config.d_model,
+                nhead=config.nhead,
+                dim_feedforward=config.dim_feedforward_per_layer[i],  # 可变宽度
+                dropout=config.dropout,
+                activation=config.activation,
+                batch_first=True,
+                norm_first=False
+            )
+            for i in range(config.num_layers)
+        ])
 
         # 多智能体输出头（每个玩家独立）
         self.action_heads = nn.ModuleList([
@@ -136,14 +158,13 @@ class CTFTransformer(nn.Module):
         if hasattr(self, 'input_norm'):
             x = self.input_norm(x)
 
-        # 4. Transformer编码
-        # Note: We pass the boolean mask directly. The nested tensor warning is
-        # informational only - PyTorch uses nested tensors internally for optimization.
-        # This is safe and actually faster than alternatives.
-        context = self.transformer_encoder(
-            x,
-            src_key_padding_mask=padding_mask
-        )  # (B, T, D)
+        # 4. Transformer编码（手动迭代各层以支持可变FFN宽度）
+        context = x
+        for layer in self.encoder_layers:
+            context = layer(
+                context,
+                src_key_padding_mask=padding_mask
+            )  # (B, T, D)
 
         # 5. 提取玩家token的表示
         player_features = []

@@ -502,7 +502,8 @@ class AdversarialTrainer:
         max_steps: int = 1000,
         temperature: float = 1.0,
         hof: Optional['HallOfFame'] = None,
-        hof_sample_rate: float = 0.0
+        hof_sample_rate: float = 0.0,
+        round_per_game: int = 1
     ):
         """
         Args:
@@ -513,6 +514,7 @@ class AdversarialTrainer:
             temperature: 采样温度
             hof: Hall of Fame对象（可选）
             hof_sample_rate: HoF对手采样率（0.0-1.0）
+            round_per_game: 每个配对的对战轮次（默认1轮）
         """
         self.matchup_strategy = matchup_strategy
         self.reward_system = reward_system
@@ -521,6 +523,7 @@ class AdversarialTrainer:
         self.temperature = temperature
         self.hof = hof
         self.hof_sample_rate = hof_sample_rate
+        self.round_per_game = round_per_game
 
     def _create_agent_from_state(self, state_dict: Dict, team: str) -> 'TransformerAgent':
         """
@@ -570,7 +573,16 @@ class AdversarialTrainer:
         matchups = self.matchup_strategy.create_matchups(population, generation)
         print(f"世代 {generation}: 创建 {len(matchups)} 场对战")
 
-        # 2. HoF对手采样（如果启用）
+        # 2. 支持多轮对战：扩展配对列表
+        if self.round_per_game > 1:
+            expanded_matchups = []
+            for ind_l, ind_r in matchups:
+                for _ in range(self.round_per_game):
+                    expanded_matchups.append((ind_l, ind_r))
+            matchups = expanded_matchups
+            print(f"  └─ 多轮对战: 每个配对 {self.round_per_game} 轮 → 总计 {len(matchups)} 场对战")
+
+        # 3. HoF对手采样（如果启用）
         hof_matchups_count = 0
         if self.hof and self.hof_sample_rate > 0 and not self.hof.is_empty():
             import random
@@ -602,7 +614,7 @@ class AdversarialTrainer:
             if hof_matchups_count > 0:
                 print(f"  └─ HoF采样: {hof_matchups_count}/{len(matchups)} 场对战使用HoF对手")
 
-        # 3. 并行执行对战
+        # 4. 并行执行对战
         results = self.executor.execute_matchups(
             matchups,
             self.reward_system,
@@ -610,10 +622,10 @@ class AdversarialTrainer:
             self.temperature
         )
 
-        # 4. 更新适应度
+        # 5. 更新适应度
         update_fitness_from_results(population, results)
 
-        # 5. 收集统计信息
+        # 6. 收集统计信息
         stats = self._collect_statistics(population, results, hof_matchups_count)
 
         return stats

@@ -63,6 +63,7 @@ class StageConfig:
 
     # 以下为有默认值的参数
     crossover_alpha: float = 0.5
+    round_per_game: int = 1     # 每个配对的对战轮次（默认1轮）
 
     # HoF参数
     hof_sample_rate: float = 0.0  # HoF对手采样率
@@ -89,6 +90,7 @@ class StageConfig:
             'elite_size': self.elite_size,
             'tournament_size': self.tournament_size,
             'games_per_individual': self.games_per_individual,
+            'round_per_game': self.round_per_game,
             'initial_temperature': self.initial_temperature,
             'min_temperature': self.min_temperature,
             'cooling_rate': self.cooling_rate,
@@ -169,7 +171,8 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=8,
         elite_size=2,
         tournament_size=3,
-        games_per_individual=64,
+        games_per_individual=24,
+        round_per_game=5,  # 每个配对3轮对战
         initial_temperature=1.5,
         min_temperature=0.1,
         cooling_rate=0.98,
@@ -195,7 +198,8 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=24,
         elite_size=6,
         tournament_size=4,
-        games_per_individual=128,
+        games_per_individual=24,
+        round_per_game=3,  # 每个配对2轮对战
         initial_temperature=1.0,
         min_temperature=0.15,
         cooling_rate=0.99,
@@ -221,7 +225,8 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=64,
         elite_size=16,
         tournament_size=5,
-        games_per_individual=128,
+        games_per_individual=24,
+        round_per_game=3,  # 每个配对1轮对战
         initial_temperature=0.8,
         min_temperature=0.2,
         cooling_rate=0.995,
@@ -247,7 +252,8 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=32,
         elite_size=8,
         tournament_size=6,
-        games_per_individual=128,
+        games_per_individual=24,
+        round_per_game=3,  # 每个配对1轮对战
         initial_temperature=0.5,
         min_temperature=0.25,
         cooling_rate=0.998,
@@ -284,12 +290,13 @@ def create_quick_test_configs() -> Dict[TrainingStage, StageConfig]:
             name=f"快速测试-{stage.name}",
             start_gen=0,
             end_gen=3,
-            min_generations=3,
+            min_generations=1,
             max_generations=9,
-            population_size=4,
+            population_size=3,
             elite_size=1,
             tournament_size=2,
             games_per_individual=4,
+            round_per_game=2,
             initial_temperature=1.0,
             min_temperature=0.1,
             cooling_rate=0.95,
