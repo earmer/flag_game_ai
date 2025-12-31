@@ -399,8 +399,8 @@ class EvolutionaryTrainer:
             num_workers=config.num_workers,
             max_steps=config.max_game_steps,
             temperature=config.action_temperature,
-            fixed_flag_ratio=config.fixed_flag_game_ratio,
-            use_fixed_flags=config.use_fixed_flag_games
+            fixed_flag_ratio=getattr(config, 'fixed_flag_game_ratio', 0.1),
+            use_fixed_flags=getattr(config, 'use_fixed_flag_games', True)
         )
 
         # 遗传算法参数
