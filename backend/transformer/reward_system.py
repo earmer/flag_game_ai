@@ -55,14 +55,18 @@ class RewardInfo:
 # ============ 稀疏奖励计算器 ============
 
 class SparseRewardCalculator:
-    """稀疏奖励计算器 - 只在关键事件发生时给予奖励"""
+    """稀疏奖励计算器 - 只在关键事件发生时给予奖励
+
+    修复: 增大夺旗奖励，添加平局惩罚
+    """
 
     def __init__(self):
-        # 奖励权重
+        # 奖励权重（增大夺旗相关奖励）
         self.win_reward = 1000.0
         self.loss_penalty = -500.0
-        self.flag_captured_reward = 200.0
-        self.flag_lost_penalty = -200.0
+        self.draw_penalty = -30.0           # 新增: 平局惩罚
+        self.flag_captured_reward = 400.0   # 增大: 200 -> 400
+        self.flag_lost_penalty = -400.0     # 增大: -200 -> -400
         self.teammate_freed_reward = 50.0
 
     def calculate(
@@ -83,7 +87,9 @@ class SparseRewardCalculator:
                 reward += self.loss_penalty
                 breakdown['loss'] = self.loss_penalty
             else:
-                breakdown['draw'] = 0.0
+                # 新增: 平局惩罚
+                reward += self.draw_penalty
+                breakdown['draw'] = self.draw_penalty
 
         # 2. 捕获旗帜奖励
         flags_captured = current_state.my_score - prev_state.my_score
@@ -115,14 +121,17 @@ class SparseRewardCalculator:
 # ============ 密集奖励计算器 ============
 
 class DenseRewardCalculator:
-    """密集奖励计算器 - 每步都提供反馈"""
+    """密集奖励计算器 - 每步都提供反馈
+
+    修复: 增大拾取旗帜奖励
+    """
 
     def __init__(self):
-        # 基础行为奖励
+        # 基础行为奖励（增大夺旗相关奖励）
         self.move_reward = 0.1
-        self.approach_target_reward = 2.0
-        self.approach_flag_reward = 1.0
-        self.pickup_flag_reward = 50.0
+        self.approach_target_reward = 3.0   # 增大: 2.0 -> 3.0 (持旗接近目标)
+        self.approach_flag_reward = 1.5     # 增大: 1.0 -> 1.5 (接近旗帜)
+        self.pickup_flag_reward = 100.0     # 增大: 50 -> 100 (拾取旗帜)
         self.tag_enemy_reward = 10.0
         self.tagged_penalty = -30.0
         self.safe_with_flag_reward = 0.5
@@ -285,7 +294,7 @@ class DenseRewardCalculator:
 class CurriculumScheduler:
     """课程学习调度器 - 动态调整稀疏奖励和密集奖励的混合比例
 
-    新增：基于平局率的自适应切换，只有当平局率<90%时才开始增加稀疏奖励
+    修复: 移除预热机制，直接启用稀疏奖励（方案 2A）
     """
 
     def __init__(self, stage_boundaries: Optional[List[int]] = None):
@@ -303,22 +312,16 @@ class CurriculumScheduler:
         self.stage3_end = stage_boundaries[2]  # Gen stage2_end+1 - stage3_end: 稀疏为主
         # Gen stage3_end+1+: 纯稀疏
 
-        # 平局率阈值：只有平局率低于此值才开始增加稀疏奖励
-        self.draw_rate_threshold = 0.90  # 90%平局率阈值
-        self.current_draw_rate = 1.0     # 当前平局率（初始假设100%）
-        self.sparse_enabled = False      # 是否启用稀疏奖励增加
+        # 修复: 直接启用稀疏奖励，移除平局率预热机制（方案 2A）
+        self.sparse_enabled = True  # 始终启用
 
         # 手动权重覆盖（用于4阶段训练）
         self.manual_weights: Optional[Tuple[float, float]] = None
 
     def update_draw_rate(self, draw_rate: float) -> None:
-        """更新当前平局率"""
-        self.current_draw_rate = draw_rate
-        # 只有当平局率低于阈值时才启用稀疏奖励增加
-        if draw_rate < self.draw_rate_threshold:
-            if not self.sparse_enabled:
-                print(f"[Curriculum] 平局率 {draw_rate:.1%} < {self.draw_rate_threshold:.0%}，启用稀疏奖励增加")
-            self.sparse_enabled = True
+        """更新当前平局率（保留接口兼容性，但不再影响 sparse_enabled）"""
+        # 方案 2A: 不再基于平局率切换，sparse_enabled 始终为 True
+        pass
 
     def set_weights(self, dense_weight: float, sparse_weight: float) -> None:
         """
@@ -338,18 +341,13 @@ class CurriculumScheduler:
     def get_weights(self, generation: int) -> Tuple[float, float]:
         """获取当前世代的奖励权重 (dense_weight, sparse_weight)
 
-        如果设置了手动权重，则直接返回手动权重
-        否则，如果平局率仍然>=90%，则保持密集奖励为主，不增加稀疏奖励
+        修复: 移除预热检查，直接按世代进行课程学习
         """
         # 优先返回手动设置的权重
         if self.manual_weights is not None:
             return self.manual_weights
 
-        # 如果平局率仍然很高，保持密集奖励为主
-        if not self.sparse_enabled:
-            return 0.8, 0.2
-
-        # 平局率已降低，按世代进行课程学习
+        # 按世代进行课程学习（移除预热检查）
         if generation <= self.stage1_end:
             # Stage 1 (Gen 0-50): 密集奖励为主，快速学习
             return 0.8, 0.2
@@ -367,9 +365,7 @@ class CurriculumScheduler:
             return 0.0, 1.0
 
     def get_stage(self, generation: int) -> int:
-        """获取当前训练阶段"""
-        if not self.sparse_enabled:
-            return 0  # 预热阶段（平局率仍然很高）
+        """获取当前训练阶段（移除预热阶段）"""
         if generation <= self.stage1_end:
             return 1
         elif generation <= self.stage2_end:

@@ -53,6 +53,7 @@ class StageConfig:
 
     # 遗传参数
     initial_temperature: float
+    min_temperature: float          # 阶段最低温度
     cooling_rate: float
     mutation_rate: float
 
@@ -89,6 +90,7 @@ class StageConfig:
             'tournament_size': self.tournament_size,
             'games_per_individual': self.games_per_individual,
             'initial_temperature': self.initial_temperature,
+            'min_temperature': self.min_temperature,
             'cooling_rate': self.cooling_rate,
             'mutation_rate': self.mutation_rate,
             'crossover_alpha': self.crossover_alpha,
@@ -167,8 +169,9 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=8,
         elite_size=2,
         tournament_size=3,
-        games_per_individual=12,
+        games_per_individual=64,
         initial_temperature=1.5,
+        min_temperature=0.1,
         cooling_rate=0.98,
         mutation_rate=0.15,
         crossover_alpha=0.5,
@@ -192,8 +195,9 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=24,
         elite_size=6,
         tournament_size=4,
-        games_per_individual=12,
+        games_per_individual=128,
         initial_temperature=1.0,
+        min_temperature=0.15,
         cooling_rate=0.99,
         mutation_rate=0.12,
         crossover_alpha=0.5,
@@ -217,8 +221,9 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=64,
         elite_size=16,
         tournament_size=5,
-        games_per_individual=12,
+        games_per_individual=128,
         initial_temperature=0.8,
+        min_temperature=0.2,
         cooling_rate=0.995,
         mutation_rate=0.08,
         crossover_alpha=0.5,
@@ -242,8 +247,9 @@ def create_stage_configs() -> Dict[TrainingStage, StageConfig]:
         population_size=32,
         elite_size=8,
         tournament_size=6,
-        games_per_individual=12,
+        games_per_individual=128,
         initial_temperature=0.5,
+        min_temperature=0.25,
         cooling_rate=0.998,
         mutation_rate=0.05,
         crossover_alpha=0.5,
@@ -285,6 +291,7 @@ def create_quick_test_configs() -> Dict[TrainingStage, StageConfig]:
             tournament_size=2,
             games_per_individual=4,
             initial_temperature=1.0,
+            min_temperature=0.1,
             cooling_rate=0.95,
             mutation_rate=0.1,
             crossover_alpha=0.5,

@@ -49,7 +49,7 @@ class TrainingConfig:
 
     # 训练参数
     num_generations: int = 200   # 增加到200代（原50代，支持100000场对战）
-    max_game_steps: int = 1000
+    max_game_steps: int = 500    # 修复: 1000 -> 500 (2:30限制，每步0.3秒)
     action_temperature: float = 1.0
 
     # 对抗训练参数
@@ -723,7 +723,7 @@ class StagedEvolutionaryTrainer:
 
         annealing_config = AnnealingConfig(
             initial_temperature=config.initial_temperature,
-            min_temperature=0.1,
+            min_temperature=config.min_temperature,
             cooling_rate=config.cooling_rate
         )
         self.annealing = AnnealingScheduler(annealing_config)
@@ -777,6 +777,8 @@ class StagedEvolutionaryTrainer:
         """
         训练单个阶段
 
+        修复: 使用 max_generations 作为循环上限，而非 end_gen
+
         Args:
             stage: 当前阶段
 
@@ -785,12 +787,11 @@ class StagedEvolutionaryTrainer:
         """
         config = self.stage_configs[stage]
         stage_start_gen = config.start_gen
-        stage_end_gen = config.end_gen
-        generations_in_stage = 0
 
-        for gen in range(stage_start_gen, stage_end_gen + 1):
+        # 使用 max_generations 作为循环上限（修复原 bug）
+        for generations_in_stage in range(1, config.max_generations + 1):
+            gen = stage_start_gen + generations_in_stage - 1
             self.current_generation = gen
-            generations_in_stage += 1
 
             # 获取温度（相对于阶段内的世代数）
             temperature = self.annealing.get_temperature(generations_in_stage - 1)
@@ -817,7 +818,7 @@ class StagedEvolutionaryTrainer:
                 self.best_fitness_ever = stats['best_fitness']
 
             # 6. 保存检查点
-            if gen % config.benchmark_interval == 0:
+            if generations_in_stage % config.benchmark_interval == 0:
                 self.checkpoint_manager.save_checkpoint(
                     gen, self.population, temperature, stats,
                     is_best=(stats['best_fitness'] == self.best_fitness_ever)
@@ -825,22 +826,18 @@ class StagedEvolutionaryTrainer:
 
             # 7. 检查晋级条件（达到最小世代数后）
             if generations_in_stage >= config.min_generations:
-                if gen % config.benchmark_interval == 0:
+                if generations_in_stage % config.benchmark_interval == 0:
                     advanced = self._check_advancement(stage, gen)
                     if advanced:
                         return True
 
-            # 8. 检查是否达到最大世代数
-            if generations_in_stage >= config.max_generations:
-                self.logger.log_message(
-                    f"达到最大世代数 {config.max_generations}，强制结束阶段"
-                )
-                return config.auto_advance
-
-            # 9. 遗传演化
+            # 8. 遗传演化
             self._evolve_population(temperature)
 
-        # 阶段结束，检查是否自动晋级
+        # 达到最大世代数，强制结束阶段
+        self.logger.log_message(
+            f"达到最大世代数 {config.max_generations}，强制结束阶段"
+        )
         return config.auto_advance
 
     def _check_advancement(self, stage: TrainingStage, generation: int) -> bool:
