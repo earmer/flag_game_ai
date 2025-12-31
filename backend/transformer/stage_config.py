@@ -77,6 +77,10 @@ class StageConfig:
     # 并行参数
     num_workers: int = 8
 
+    # 固定旗帜游戏配置
+    use_fixed_flag_games: bool = True
+    fixed_flag_game_ratio: float = 0.1
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -103,7 +107,9 @@ class StageConfig:
             'min_win_rate': self.min_win_rate,
             'min_benchmark_games': self.min_benchmark_games,
             'auto_advance': self.auto_advance,
-            'num_workers': self.num_workers
+            'num_workers': self.num_workers,
+            'use_fixed_flag_games': self.use_fixed_flag_games,
+            'fixed_flag_game_ratio': self.fixed_flag_game_ratio
         }
 
 

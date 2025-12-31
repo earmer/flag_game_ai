@@ -398,7 +398,9 @@ class EvolutionaryTrainer:
             reward_system=self.reward_system,
             num_workers=config.num_workers,
             max_steps=config.max_game_steps,
-            temperature=config.action_temperature
+            temperature=config.action_temperature,
+            fixed_flag_ratio=config.fixed_flag_game_ratio,
+            use_fixed_flags=config.use_fixed_flag_games
         )
 
         # 遗传算法参数
@@ -715,7 +717,9 @@ class StagedEvolutionaryTrainer:
             temperature=1.0,
             hof=self.hof,
             hof_sample_rate=config.hof_sample_rate,
-            round_per_game=config.round_per_game
+            round_per_game=config.round_per_game,
+            fixed_flag_ratio=config.fixed_flag_game_ratio,
+            use_fixed_flags=config.use_fixed_flag_games
         )
         self.logger.log_message(f"HoF采样率: {config.hof_sample_rate:.0%}")
         self.logger.log_message(f"多轮对战: 每个配对 {config.round_per_game} 轮")

@@ -252,7 +252,8 @@ def run_single_game(
     reward_system: 'AdaptiveRewardSystem',
     max_steps: int = 1000,
     temperature: float = 1.0,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    use_fixed_flags: bool = False
 ) -> GameResult:
     """
     执行单场对战
@@ -264,6 +265,7 @@ def run_single_game(
         max_steps: 最大步数
         temperature: 动作采样温度
         seed: 随机种子（可选）
+        use_fixed_flags: 是否使用固定旗帜位置
 
     Returns:
         GameResult对象
@@ -279,7 +281,12 @@ def run_single_game(
     if seed is None:
         seed = int(time.time() * 1000) % 1000000
 
-    sim = CTFSim(width=20, height=20, seed=seed)
+    if use_fixed_flags:
+        # 使用固定旗帜位置（默认垂直线布局）
+        sim = CTFSim(width=20, height=20, seed=seed, use_random_flags=False)
+    else:
+        # 使用随机旗帜位置
+        sim = CTFSim(width=20, height=20, seed=seed)
     sim.reset()
 
     # 2. 创建Geometry
@@ -351,7 +358,8 @@ class ParallelGameExecutor:
         reward_system: 'AdaptiveRewardSystem',
         max_steps: int = 1000,
         temperature: float = 1.0,
-        show_progress: bool = True
+        show_progress: bool = True,
+        fixed_flag_indices: Optional[range] = None
     ) -> List[GameResult]:
         """
         并行执行所有对战
@@ -374,18 +382,22 @@ class ParallelGameExecutor:
 
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
             # 提交所有任务
-            future_to_matchup = {
-                executor.submit(
+            future_to_matchup = {}
+            for idx, (ind_l, ind_r) in enumerate(matchups):
+                use_fixed_flags = (fixed_flag_indices is not None and
+                                   idx in fixed_flag_indices)
+
+                future = executor.submit(
                     run_single_game,
                     ind_l,
                     ind_r,
                     reward_system,
                     max_steps,
                     temperature,
-                    seed=None
-                ): (ind_l, ind_r)
-                for ind_l, ind_r in matchups
-            }
+                    seed=None,
+                    use_fixed_flags=use_fixed_flags
+                )
+                future_to_matchup[future] = (ind_l, ind_r)
 
             # 收集结果
             completed = 0
@@ -503,7 +515,9 @@ class AdversarialTrainer:
         temperature: float = 1.0,
         hof: Optional['HallOfFame'] = None,
         hof_sample_rate: float = 0.0,
-        round_per_game: int = 1
+        round_per_game: int = 1,
+        fixed_flag_ratio: float = 0.1,
+        use_fixed_flags: bool = True
     ):
         """
         Args:
@@ -515,6 +529,8 @@ class AdversarialTrainer:
             hof: Hall of Fame对象（可选）
             hof_sample_rate: HoF对手采样率（0.0-1.0）
             round_per_game: 每个配对的对战轮次（默认1轮）
+            fixed_flag_ratio: 固定旗帜游戏比例（0.0-1.0）
+            use_fixed_flags: 是否启用固定旗帜游戏
         """
         self.matchup_strategy = matchup_strategy
         self.reward_system = reward_system
@@ -524,6 +540,8 @@ class AdversarialTrainer:
         self.hof = hof
         self.hof_sample_rate = hof_sample_rate
         self.round_per_game = round_per_game
+        self.fixed_flag_ratio = fixed_flag_ratio
+        self.use_fixed_flags = use_fixed_flags
 
     def _create_agent_from_state(self, state_dict: Dict, team: str) -> 'TransformerAgent':
         """
@@ -553,6 +571,45 @@ class AdversarialTrainer:
         )
 
         return agent
+
+    def _create_fixed_flag_matchups(
+        self,
+        population: List[Individual],
+        generation: int
+    ) -> List[Tuple[Individual, Individual]]:
+        """
+        创建固定旗帜对战配对
+
+        策略：
+        - 每个个体至少参与一场固定旗帜游戏
+        - 如果比例允许，进行循环赛
+
+        Args:
+            population: 种群列表
+            generation: 当前世代数
+
+        Returns:
+            固定旗帜对战配对列表
+        """
+        if not self.use_fixed_flags or self.fixed_flag_ratio <= 0:
+            return []
+
+        # 计算固定旗帜游戏数量
+        # 基于当前世代的总对战数估算
+        base_matchups = len(population) * (len(population) - 1) // 2  # 循环赛数量
+        num_fixed_games = max(1, int(base_matchups * self.fixed_flag_ratio))
+
+        # 创建配对：优先让每个个体都参与
+        matchups = []
+        for i in range(len(population)):
+            for j in range(i + 1, len(population)):
+                matchups.append((population[i], population[j]))
+                if len(matchups) >= num_fixed_games:
+                    break
+            if len(matchups) >= num_fixed_games:
+                break
+
+        return matchups
 
     def train_epoch(
         self,
@@ -614,12 +671,23 @@ class AdversarialTrainer:
             if hof_matchups_count > 0:
                 print(f"  └─ HoF采样: {hof_matchups_count}/{len(matchups)} 场对战使用HoF对手")
 
+        # 3.5 固定旗帜对战注入
+        fixed_flag_matchups = self._create_fixed_flag_matchups(population, generation)
+        num_fixed_games = len(fixed_flag_matchups)
+        fixed_flag_indices = None
+
+        if num_fixed_games > 0:
+            fixed_flag_indices = range(len(matchups), len(matchups) + num_fixed_games)
+            matchups.extend(fixed_flag_matchups)
+            print(f"  └─ 固定旗帜测试: {num_fixed_games} 场对战 ({num_fixed_games/len(matchups)*100:.1f}%)")
+
         # 4. 并行执行对战
         results = self.executor.execute_matchups(
             matchups,
             self.reward_system,
             self.max_steps,
-            self.temperature
+            self.temperature,
+            fixed_flag_indices=fixed_flag_indices
         )
 
         # 5. 更新适应度

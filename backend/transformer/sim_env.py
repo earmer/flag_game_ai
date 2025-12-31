@@ -176,6 +176,7 @@ class CTFSim:
         num_players: int = 3,
         num_flags: int = 9,
         use_random_flags: bool = True,
+        fixed_flag_positions: Optional[Dict[str, List[Pos]]] = None,
         dt_ms: int = 600,
         move_duration_ms: int = 300,
         substep_ms: int = 25,
@@ -186,6 +187,7 @@ class CTFSim:
         self.num_players = int(num_players)
         self.num_flags = int(num_flags)
         self.use_random_flags = bool(use_random_flags)
+        self.fixed_flag_positions = fixed_flag_positions
         # dt_ms 保留兼容；内部时间以 move/substep 推进，status.time 使用 sim_time_ms
         self.dt_ms = int(dt_ms)
         self.move_duration_ms = int(move_duration_ms)
@@ -264,7 +266,11 @@ class CTFSim:
 
         # Flags
         self.flags = []
-        if self.use_random_flags:
+        if self.fixed_flag_positions is not None:
+            # 使用提供的固定旗帜位置
+            l_flags = self.fixed_flag_positions.get("L", [])
+            r_flags = self.fixed_flag_positions.get("R", [])
+        elif self.use_random_flags:
             l_flags: List[Pos] = []
             while len(l_flags) < self.num_flags:
                 x = self.rng.randint(2, (self.width // 2) - 1)
