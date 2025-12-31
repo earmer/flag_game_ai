@@ -5,11 +5,19 @@ train.py
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import os
 import shutil
 from pathlib import Path
+
+# 4阶段训练相关导入
+from stage_config import (
+    TrainingStage, StageConfig,
+    create_stage_configs, create_quick_test_configs,
+    calculate_win_rate_with_ci
+)
+from hall_of_fame import HallOfFame
 
 from _import_bootstrap import TORCH_AVAILABLE, NUMPY_AVAILABLE
 
@@ -578,6 +586,376 @@ class EvolutionaryTrainer:
 
 
 # ============================================================
+# 4阶段训练器
+# ============================================================
+
+class StagedEvolutionaryTrainer:
+    """4阶段进化训练器 - 支持阶段晋级和HoF对手采样"""
+
+    def __init__(
+        self,
+        stage_configs: Dict[TrainingStage, StageConfig],
+        experiment_name: str = "staged_training",
+        checkpoint_dir: str = "checkpoints",
+        log_dir: str = "logs",
+        seed: Optional[int] = None
+    ):
+        """
+        Args:
+            stage_configs: 4阶段配置字典
+            experiment_name: 实验名称
+            checkpoint_dir: 检查点目录
+            log_dir: 日志目录
+            seed: 随机种子
+        """
+        self.stage_configs = stage_configs
+        self.experiment_name = experiment_name
+        self.checkpoint_dir = checkpoint_dir
+        self.log_dir = log_dir
+
+        # 设置随机种子
+        if seed is not None:
+            self._set_seed(seed)
+
+        # 初始化日志和检查点管理
+        self.logger = TrainingLogger(log_dir, experiment_name)
+        self.checkpoint_manager = CheckpointManager(
+            checkpoint_dir, keep_best_n=5, experiment_name=experiment_name
+        )
+
+        # 初始化HoF
+        self.hof = HallOfFame(max_size=10)
+
+        # 模型配置（用于种群调整）
+        from transformer_model import CTFTransformerConfig
+        self.model_config = CTFTransformerConfig()
+
+        # 当前状态
+        self.current_stage = TrainingStage.FOUNDATION
+        self.current_generation = 0
+        self.best_fitness_ever = float('-inf')
+
+        # 延迟初始化的组件
+        self.population = None
+        self.reward_system = None
+        self.adversarial_trainer = None
+        self.annealing = None
+
+    def _set_seed(self, seed: int) -> None:
+        """设置随机种子"""
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    def _initialize_for_stage(self, stage: TrainingStage) -> None:
+        """为指定阶段初始化或更新组件"""
+        config = self.stage_configs[stage]
+        self.current_stage = stage
+
+        self.logger.log_message(f"\n{'='*60}")
+        self.logger.log_message(f"初始化阶段 {stage.value}: {config.name}")
+        self.logger.log_message(f"{'='*60}")
+
+        # 1. 初始化或调整种群
+        from population import Population, PopulationConfig
+
+        if self.population is None:
+            # 首次初始化
+            pop_config = PopulationConfig(
+                population_size=config.population_size,
+                elite_size=config.elite_size,
+                tournament_size=config.tournament_size
+            )
+            self.population = Population(pop_config, self.model_config)
+            self.logger.log_message(f"种群已创建: {config.population_size} 个体")
+        else:
+            # 调整种群大小
+            self.population.resize(config.population_size, self.model_config)
+            self.population.config.elite_size = config.elite_size
+            self.population.config.tournament_size = config.tournament_size
+
+        # 2. 初始化或更新奖励系统
+        from reward_system import AdaptiveRewardSystem
+
+        if self.reward_system is None:
+            self.reward_system = AdaptiveRewardSystem()
+
+        # 设置阶段奖励权重
+        self.reward_system.curriculum.set_weights(
+            config.dense_weight, config.sparse_weight
+        )
+        self.logger.log_message(
+            f"奖励权重: dense={config.dense_weight:.1f}, "
+            f"sparse={config.sparse_weight:.1f}"
+        )
+
+        # 3. 创建对抗训练器（每阶段重新创建以更新HoF采样率）
+        from adversarial_trainer import AdversarialTrainer, AdaptiveMatchupStrategy
+
+        # 阶段边界配置
+        stage_boundaries = [
+            self.stage_configs[TrainingStage.FOUNDATION].end_gen,
+            self.stage_configs[TrainingStage.OPTIMIZATION].end_gen,
+            self.stage_configs[TrainingStage.COMPETITION].end_gen
+        ]
+
+        matchup_strategy = AdaptiveMatchupStrategy(
+            round_robin_until=20,
+            tournament_games=config.games_per_individual,
+            stage_boundaries=stage_boundaries
+        )
+
+        self.adversarial_trainer = AdversarialTrainer(
+            matchup_strategy=matchup_strategy,
+            reward_system=self.reward_system,
+            num_workers=config.num_workers,
+            max_steps=1000,
+            temperature=1.0,
+            hof=self.hof,
+            hof_sample_rate=config.hof_sample_rate
+        )
+        self.logger.log_message(f"HoF采样率: {config.hof_sample_rate:.0%}")
+
+        # 4. 初始化退火调度器
+        from genetic_ops import AnnealingScheduler, AnnealingConfig
+
+        annealing_config = AnnealingConfig(
+            initial_temperature=config.initial_temperature,
+            min_temperature=0.1,
+            cooling_rate=config.cooling_rate
+        )
+        self.annealing = AnnealingScheduler(annealing_config)
+
+        self.logger.log_message(f"阶段 {stage.value} 初始化完成")
+
+    def train(self) -> None:
+        """执行4阶段训练流程"""
+        self.logger.log_message("=" * 60)
+        self.logger.log_message("开始4阶段进化训练")
+        self.logger.log_message("=" * 60)
+
+        # 遍历4个阶段
+        for stage in TrainingStage:
+            config = self.stage_configs[stage]
+
+            self.logger.log_message(f"\n{'#'*60}")
+            self.logger.log_message(f"# 阶段 {stage.value}: {config.name}")
+            self.logger.log_message(f"# 世代范围: {config.start_gen} - {config.end_gen}")
+            self.logger.log_message(f"# 种群大小: {config.population_size}")
+            self.logger.log_message(f"{'#'*60}")
+
+            # 初始化阶段
+            self._initialize_for_stage(stage)
+
+            # 训练当前阶段
+            advanced = self._train_stage(stage)
+
+            if advanced:
+                # 保存冠军到HoF
+                self._save_champion_to_hof(stage)
+                self.logger.log_message(f"✓ 阶段 {stage.value} 完成，晋级到下一阶段")
+            else:
+                self.logger.log_message(f"✗ 阶段 {stage.value} 未能晋级，训练结束")
+                break
+
+        # 训练结束
+        self.logger.log_message("\n" + "=" * 60)
+        self.logger.log_message("4阶段训练完成！")
+        self.logger.log_message(f"最佳适应度: {self.best_fitness_ever:.2f}")
+        self.logger.log_message(f"HoF成员数: {len(self.hof)}")
+        self.logger.log_message("=" * 60)
+
+        # 保存HoF
+        hof_path = Path(self.log_dir) / self.experiment_name / "hof"
+        self.hof.save(str(hof_path))
+
+        self.logger.close()
+
+    def _train_stage(self, stage: TrainingStage) -> bool:
+        """
+        训练单个阶段
+
+        Args:
+            stage: 当前阶段
+
+        Returns:
+            是否成功晋级
+        """
+        config = self.stage_configs[stage]
+        stage_start_gen = config.start_gen
+        stage_end_gen = config.end_gen
+        generations_in_stage = 0
+
+        for gen in range(stage_start_gen, stage_end_gen + 1):
+            self.current_generation = gen
+            generations_in_stage += 1
+
+            # 获取温度（相对于阶段内的世代数）
+            temperature = self.annealing.get_temperature(generations_in_stage - 1)
+
+            self.logger.log_message(f"\n--- 世代 {gen} (阶段内第{generations_in_stage}代) ---")
+
+            # 1. 重置奖励系统
+            self.reward_system.reset_for_generation(gen)
+
+            # 2. 对抗训练
+            stats = self.adversarial_trainer.train_epoch(
+                self.population.individuals, gen
+            )
+
+            # 3. 更新平局率
+            draw_rate = stats['draws'] / stats['num_games'] if stats['num_games'] > 0 else 1.0
+            self.reward_system.update_draw_rate(draw_rate)
+
+            # 4. 记录日志
+            self.logger.log_generation(gen, temperature, stats)
+
+            # 5. 更新最佳适应度
+            if stats['best_fitness'] > self.best_fitness_ever:
+                self.best_fitness_ever = stats['best_fitness']
+
+            # 6. 保存检查点
+            if gen % config.benchmark_interval == 0:
+                self.checkpoint_manager.save_checkpoint(
+                    gen, self.population, temperature, stats,
+                    is_best=(stats['best_fitness'] == self.best_fitness_ever)
+                )
+
+            # 7. 检查晋级条件（达到最小世代数后）
+            if generations_in_stage >= config.min_generations:
+                if gen % config.benchmark_interval == 0:
+                    advanced = self._check_advancement(stage, gen)
+                    if advanced:
+                        return True
+
+            # 8. 检查是否达到最大世代数
+            if generations_in_stage >= config.max_generations:
+                self.logger.log_message(
+                    f"达到最大世代数 {config.max_generations}，强制结束阶段"
+                )
+                return config.auto_advance
+
+            # 9. 遗传演化
+            self._evolve_population(temperature)
+
+        # 阶段结束，检查是否自动晋级
+        return config.auto_advance
+
+    def _check_advancement(self, stage: TrainingStage, generation: int) -> bool:
+        """
+        检查是否满足晋级条件
+
+        Args:
+            stage: 当前阶段
+            generation: 当前世代
+
+        Returns:
+            是否可以晋级
+        """
+        config = self.stage_configs[stage]
+
+        # 自动晋级模式（快速测试）
+        if config.auto_advance:
+            self.logger.log_message("自动晋级模式，跳过胜率检查")
+            return True
+
+        self.logger.log_message(f"\n--- 基准测试 (Gen {generation}) ---")
+
+        try:
+            from benchmark import run_benchmark
+            from game_interface import TransformerAgent
+
+            # 获取最优个体
+            self.population.sort_by_fitness()
+            best_individual = self.population.individuals[0]
+
+            # 创建智能体
+            agent = TransformerAgent(
+                team="L",
+                model=best_individual.model,
+                temperature=0.5
+            )
+
+            # 运行基准测试
+            result = run_benchmark(
+                transformer_agent=agent,
+                num_games=config.min_benchmark_games,
+                max_steps=1000
+            )
+
+            # 计算置信区间
+            win_rate, lower, upper = calculate_win_rate_with_ci(
+                result.left_wins, result.total_games
+            )
+
+            self.logger.log_message(
+                f"基准测试: 胜率={win_rate:.1%} "
+                f"(95% CI: [{lower:.1%}, {upper:.1%}]), "
+                f"门槛={config.min_win_rate:.0%}"
+            )
+
+            # 检查下界是否达标
+            if lower >= config.min_win_rate:
+                self.logger.log_message(
+                    f"✓ 晋级条件满足: 下界{lower:.1%} >= {config.min_win_rate:.0%}"
+                )
+                return True
+            else:
+                self.logger.log_message(
+                    f"✗ 晋级条件未满足: 下界{lower:.1%} < {config.min_win_rate:.0%}"
+                )
+                return False
+
+        except Exception as e:
+            self.logger.log_message(f"基准测试失败: {e}")
+            return False
+
+    def _save_champion_to_hof(self, stage: TrainingStage) -> None:
+        """保存当前阶段冠军到HoF"""
+        self.population.sort_by_fitness()
+        best = self.population.individuals[0]
+
+        # 计算胜率
+        win_rate = best.win_rate() if best.games_played > 0 else 0.0
+
+        # 保存到HoF
+        self.hof.add_champion(
+            model_state_dict=best.model.state_dict(),
+            stage=stage.value,
+            generation=self.current_generation,
+            win_rate=win_rate,
+            metadata={
+                'fitness': best.fitness,
+                'wins': best.wins,
+                'losses': best.losses,
+                'flags_captured': best.flags_captured
+            }
+        )
+
+        self.logger.log_message(
+            f"冠军已保存到HoF: Stage {stage.value}, "
+            f"Gen {self.current_generation}, WR {win_rate:.1%}"
+        )
+
+    def _evolve_population(self, temperature: float) -> None:
+        """执行遗传演化"""
+        from genetic_ops import evolve_generation
+
+        config = self.stage_configs[self.current_stage]
+
+        new_individuals = evolve_generation(
+            population=self.population,
+            temperature=temperature,
+            crossover_alpha=config.crossover_alpha,
+            mutation_rate=config.mutation_rate
+        )
+
+        self.population.individuals = new_individuals
+
+
+# ============================================================
 # 命令行接口
 # ============================================================
 
@@ -613,6 +991,20 @@ def parse_arguments():
         help='快速测试模式（小规模训练）'
     )
 
+    # 4阶段快速测试模式
+    parser.add_argument(
+        '--quick-test-staged',
+        action='store_true',
+        help='4阶段快速测试模式（完整流程验证，约5分钟）'
+    )
+
+    # 4阶段完整训练模式
+    parser.add_argument(
+        '--staged',
+        action='store_true',
+        help='4阶段完整训练模式'
+    )
+
     # 覆盖配置参数
     parser.add_argument('--population-size', type=int, help='种群大小')
     parser.add_argument('--num-generations', type=int, help='世代数')
@@ -627,7 +1019,48 @@ def main():
     """主函数"""
     args = parse_arguments()
 
-    # 加载配置
+    # 4阶段快速测试模式
+    if args.quick_test_staged:
+        print("⚡ 4阶段快速测试模式")
+        stage_configs = create_quick_test_configs()
+        trainer = StagedEvolutionaryTrainer(
+            stage_configs=stage_configs,
+            experiment_name="quick_test_staged",
+            seed=args.seed
+        )
+        try:
+            trainer.train()
+        except KeyboardInterrupt:
+            print("\n训练被用户中断")
+            trainer.logger.close()
+        except Exception as e:
+            print(f"\n训练出错: {e}")
+            trainer.logger.close()
+            raise
+        return
+
+    # 4阶段完整训练模式
+    if args.staged:
+        print("🚀 4阶段完整训练模式")
+        stage_configs = create_stage_configs()
+        experiment_name = args.experiment_name or "staged_training"
+        trainer = StagedEvolutionaryTrainer(
+            stage_configs=stage_configs,
+            experiment_name=experiment_name,
+            seed=args.seed
+        )
+        try:
+            trainer.train()
+        except KeyboardInterrupt:
+            print("\n训练被用户中断")
+            trainer.logger.close()
+        except Exception as e:
+            print(f"\n训练出错: {e}")
+            trainer.logger.close()
+            raise
+        return
+
+    # 原有训练模式（向后兼容）
     if args.config:
         config = load_config(args.config)
     else:
