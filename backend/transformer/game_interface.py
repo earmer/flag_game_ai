@@ -284,18 +284,19 @@ class TransformerAgent(PolicyAgent):
             ])
 
             # 4. 将batch张量移动到设备
-            batch.type_ids = batch.type_ids.to(self.device)
-            batch.features = batch.features.to(self.device)
-            batch.padding_mask = batch.padding_mask.to(self.device)
-            batch.my_player_token_indices = batch.my_player_token_indices.to(self.device)
+            batch_type_ids = batch.type_ids.to(self.device)
+            batch_features = batch.features.to(self.device)
+            batch_padding_mask = batch.padding_mask.to(self.device)
+            # my_player_token_indices is a tuple of ints (not a tensor), used for indexing
+            batch_my_player_indices = batch.my_player_token_indices
 
             # 5. 模型推理
             with torch.no_grad():
                 action_logits = self.model(
-                    type_ids=batch.type_ids,
-                    features=batch.features,
-                    padding_mask=batch.padding_mask,
-                    my_player_token_indices=batch.my_player_token_indices
+                    type_ids=batch_type_ids,
+                    features=batch_features,
+                    padding_mask=batch_padding_mask,
+                    my_player_token_indices=batch_my_player_indices
                 )  # (1, num_players, num_actions)
 
             # 6. 移除batch维度
