@@ -388,6 +388,17 @@ class ParallelGameExecutor:
         Returns:
             所有对战结果列表
         """
+        # Validate multiprocessing start method for CUDA
+        if device and device.type == "cuda":
+            import multiprocessing as mp
+            start_method = mp.get_start_method()
+            if start_method != 'spawn':
+                raise RuntimeError(
+                    f"CUDA requires multiprocessing start method 'spawn', "
+                    f"but current method is '{start_method}'. "
+                    f"Set mp.set_start_method('spawn') before importing torch."
+                )
+
         results = []
         total_games = len(matchups)
 
@@ -405,13 +416,15 @@ class ParallelGameExecutor:
                 if idx == 0:  # Only print once
                     print(f"[DEBUG] device={device}, type={type(device)}, device.type={device.type if device else 'N/A'}")
 
-                # Only MPS needs CPU migration (CUDA has native IPC)
+                # Device-specific handling for multiprocessing
+                # Note: With 'spawn' start method, CUDA tensors can be passed directly
+                # MPS still requires CPU migration due to lack of IPC support
                 if device and device.type == "mps":
                     # print(f"[DEBUG] Applying MPS CPU migration for game {idx}")
                     ind_l_safe = self._prepare_for_pickle(ind_l)
                     ind_r_safe = self._prepare_for_pickle(ind_r)
                 else:
-                    # CUDA/CPU: pass directly (PyTorch IPC handles CUDA)
+                    # CUDA/CPU: pass directly (requires 'spawn' start method)
                     ind_l_safe = ind_l
                     ind_r_safe = ind_r
 

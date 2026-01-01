@@ -29,6 +29,26 @@ import platform
 
 
 # ============================================================
+# Multiprocessing Configuration (MUST be before CUDA init)
+# ============================================================
+
+import multiprocessing as mp
+
+# Set start method to 'spawn' for CUDA compatibility
+# CRITICAL: Must be called before any CUDA operations
+# - 'fork': Fast but incompatible with CUDA (Linux default)
+# - 'spawn': Slower but works with CUDA (required for Linux)
+try:
+    mp.set_start_method('spawn', force=False)
+except RuntimeError:
+    # Already set (e.g., by another module or previous call)
+    current_method = mp.get_start_method()
+    if current_method != 'spawn':
+        print(f"Warning: multiprocessing start method is '{current_method}', "
+              f"but 'spawn' is required for CUDA. This may cause errors.")
+
+
+# ============================================================
 # 设备选择 - 从device_utils导入
 # ============================================================
 
