@@ -29,50 +29,10 @@ import platform
 
 
 # ============================================================
-# 设备选择
+# 设备选择 - 从device_utils导入
 # ============================================================
 
-def get_device() -> torch.device:
-    """
-    根据平台和硬件自动选择最佳设备
-
-    优先级：
-    1. Linux + CUDA: cuda
-    2. macOS: mps (Metal Performance Shaders)
-    3. 其他: cpu
-
-    Returns:
-        torch.device: 选择的设备
-    """
-    system = platform.system()
-
-    # Linux 优先使用 CUDA
-    if system == "Linux" and torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"✓ 使用 CUDA 设备: {torch.cuda.get_device_name(0)}")
-        print(f"  GPU 内存: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-        return device
-
-    # macOS 使用 MPS
-    if system == "Darwin":
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("✓ 使用 Metal Performance Shaders (MPS) 设备")
-            return device
-        else:
-            print("⚠ MPS 不可用，使用 CPU")
-            return torch.device("cpu")
-
-    # 其他情况检查 CUDA
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"✓ 使用 CUDA 设备: {torch.cuda.get_device_name(0)}")
-        print(f"  GPU 内存: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-        return device
-
-    # 默认 CPU
-    print("✓ 使用 CPU 设备")
-    return torch.device("cpu")
+from device_utils import get_device, DeviceManager
 
 
 # ============================================================
@@ -408,7 +368,7 @@ class EvolutionaryTrainer:
         )
 
         # 选择设备
-        self.device = get_device()
+        self.device = get_device(verbose=False)
         self.logger.log_message(f"使用设备: {self.device}")
 
         # 创建种群
@@ -681,6 +641,10 @@ class StagedEvolutionaryTrainer:
         # 初始化HoF
         self.hof = HallOfFame(max_size=10)
 
+        # 选择设备
+        self.device = get_device(verbose=False)
+        self.logger.log_message(f"使用设备: {self.device}")
+
         # 模型配置（用于种群调整）
         from transformer_model import CTFTransformerConfig
         self.model_config = CTFTransformerConfig()
@@ -772,7 +736,8 @@ class StagedEvolutionaryTrainer:
             hof_sample_rate=config.hof_sample_rate,
             round_per_game=config.round_per_game,
             fixed_flag_ratio=config.fixed_flag_game_ratio,
-            use_fixed_flags=config.use_fixed_flag_games
+            use_fixed_flags=config.use_fixed_flag_games,
+            device=self.device
         )
         self.logger.log_message(f"HoF采样率: {config.hof_sample_rate:.0%}")
         self.logger.log_message(f"多轮对战: 每个配对 {config.round_per_game} 轮")

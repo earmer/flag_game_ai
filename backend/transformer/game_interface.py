@@ -251,11 +251,17 @@ class TransformerAgent(PolicyAgent):
         self.temperature = temperature
         self.action_vocab = action_vocab
 
-        # 设备配置
+        # 设备配置 - 自动检测最佳设备
         if device is None and TORCH_AVAILABLE:
-            self.device = torch.device("cpu")
+            from device_utils import get_device
+            self.device = get_device(verbose=False)
         else:
             self.device = device
+
+        # 将模型移动到设备 (处理multiprocessing unpickle到CPU的情况)
+        if TORCH_AVAILABLE and self.model is not None:
+            from device_utils import move_to_device
+            self.model = move_to_device(self.model, self.device)
 
         # 设置为评估模式
         if hasattr(self.model, 'eval'):

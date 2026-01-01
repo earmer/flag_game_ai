@@ -7,10 +7,12 @@ adversarial_trainer.py
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
+import copy
 import random
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from _import_bootstrap import TORCH_AVAILABLE
 from population import Individual
 
 
@@ -295,7 +297,13 @@ def run_single_game(
     init_payload = sim.init_payload("L")
     geometry = Geometry.from_init(init_payload)
 
-    # 3. 创建智能体
+    # 3. 确保模型在正确设备上 (multiprocessing unpickles to CPU)
+    if TORCH_AVAILABLE:
+        from device_utils import move_to_device
+        individual_l.model = move_to_device(individual_l.model, device)
+        individual_r.model = move_to_device(individual_r.model, device)
+
+    # 4. 创建智能体
     agent_l = TransformerAgent(
         model=individual_l.model,
         team="L",
@@ -310,7 +318,7 @@ def run_single_game(
         device=device
     )
 
-    # 4. 运行对战
+    # 5. 运行对战
     interface = GameInterface(sim, geometry, reward_system, max_steps=max_steps)
     episode_result = interface.run_episode(
         agent_l,
@@ -318,7 +326,7 @@ def run_single_game(
         record_trajectory=False  # 训练时不记录轨迹
     )
 
-    # 5. 转换为GameResult
+    # 6. 转换为GameResult
     game_result = GameResult(
         agent_l_id=individual_l.id,
         agent_r_id=individual_r.id,
@@ -393,10 +401,24 @@ class ParallelGameExecutor:
                 use_fixed_flags = (fixed_flag_indices is not None and
                                    idx in fixed_flag_indices)
 
+                # Debug: Check device type
+                if idx == 0:  # Only print once
+                    print(f"[DEBUG] device={device}, type={type(device)}, device.type={device.type if device else 'N/A'}")
+
+                # Only MPS needs CPU migration (CUDA has native IPC)
+                if device and device.type == "mps":
+                    # print(f"[DEBUG] Applying MPS CPU migration for game {idx}")
+                    ind_l_safe = self._prepare_for_pickle(ind_l)
+                    ind_r_safe = self._prepare_for_pickle(ind_r)
+                else:
+                    # CUDA/CPU: pass directly (PyTorch IPC handles CUDA)
+                    ind_l_safe = ind_l
+                    ind_r_safe = ind_r
+
                 future = executor.submit(
                     run_single_game,
-                    ind_l,
-                    ind_r,
+                    ind_l_safe,
+                    ind_r_safe,
                     reward_system,
                     max_steps,
                     temperature,
@@ -426,6 +448,20 @@ class ParallelGameExecutor:
             print()  # 换行
 
         return results
+
+    def _prepare_for_pickle(self, individual: Individual) -> Individual:
+        """
+        Prepare Individual for MPS multiprocessing by moving model to CPU.
+
+        MPS tensors cannot be pickled for ProcessPoolExecutor.
+        CUDA tensors don't need this (native IPC support).
+        Worker will move model back to target device.
+        """
+        if TORCH_AVAILABLE:
+            ind_copy = copy.copy(individual)
+            ind_copy.model = ind_copy.model.cpu()
+            return ind_copy
+        return individual
 
 
 # ============================================================

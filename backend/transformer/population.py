@@ -106,8 +106,12 @@ class Population:
         self.best_individual: Optional[Individual] = None
         self.best_fitness: float = float('-inf')
 
-        # 设备配置
-        self.device = device if device is not None else torch.device("cpu")
+        # 设备配置 - 自动检测最佳设备
+        if device is not None:
+            self.device = device
+        else:
+            from device_utils import get_device
+            self.device = get_device(verbose=False)
 
         # Auto-initialize if model_config provided
         if model_config is not None:
@@ -238,6 +242,8 @@ class Population:
 
             for i in range(num_new):
                 model = build_ctf_transformer(model_config)
+                # 将模型移动到指定设备
+                model = model.to(self.device)
                 individual = Individual(
                     id=f"gen{self.current_generation}_expand{i}",
                     model=model,
